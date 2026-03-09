@@ -26,6 +26,7 @@ const canManageManuals = (req, res, next) => {
   }
 };
 
+router.get('/', verifyToken, canManageManuals, getManuals);
 router.post('/', verifyToken, canManageManuals, upload.single('file'), createManual);
 router.put('/:id', verifyToken, canManageManuals, upload.single('file'), updateManual);
 router.delete('/:id', verifyToken, canManageManuals, deleteManual);
