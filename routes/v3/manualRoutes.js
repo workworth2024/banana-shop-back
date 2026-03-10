@@ -1,6 +1,6 @@
 import express from 'express';
 import { 
-  getManuals, createManual, updateManual, deleteManual 
+  getManuals, createManual, updateManual, deleteManual, uploadManualImage
 } from '../../controllers/manualController.js';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
 import upload from '../../middlewares/uploadMiddleware.js';
@@ -27,6 +27,7 @@ const canManageManuals = (req, res, next) => {
 };
 
 router.get('/', verifyToken, canManageManuals, getManuals);
+router.post('/upload-image', verifyToken, canManageManuals, upload.single('image'), uploadManualImage);
 router.post('/', verifyToken, canManageManuals, upload.single('file'), createManual);
 router.put('/:id', verifyToken, canManageManuals, upload.single('file'), updateManual);
 router.delete('/:id', verifyToken, canManageManuals, deleteManual);

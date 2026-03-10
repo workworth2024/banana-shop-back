@@ -36,6 +36,10 @@ const manualSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  content: {
+    type: multilingualStringSchema,
+    required: false
+  },
   path_to_file: {
     type: String,
     default: ''

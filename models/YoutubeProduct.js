@@ -61,6 +61,22 @@ const youtubeProductSchema = new mongoose.Schema({
     type: String,
     required: false,
     default: 'US'
+  },
+  link: {
+    type: String,
+    default: ''
+  },
+  wholesale_price: {
+    type: Number,
+    required: false,
+    min: 0,
+    default: null
+  },
+  count_for_wholesale: {
+    type: Number,
+    required: false,
+    min: 0,
+    default: null
   }
 }, { timestamps: true });
 

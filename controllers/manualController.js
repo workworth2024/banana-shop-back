@@ -52,9 +52,13 @@ export const createManual = async (req, res) => {
       ru: req.body['desc.ru'] || '',
       en: req.body['desc.en'] || ''
     };
+    const content = {
+      ru: req.body['content.ru'] || '',
+      en: req.body['content.en'] || ''
+    };
     const path_to_file = req.file ? `/uploads/manuals/${req.file.filename}` : '';
     
-    const manualData = { title, desc, link, path_to_file };
+    const manualData = { title, desc, link, content, path_to_file };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       manualData.filter_id = filterId;
@@ -73,6 +77,13 @@ export const updateManual = async (req, res) => {
     const { id } = req.params;
     const { link } = req.body;
     const updateData = { link };
+    
+    if (req.body['content.ru'] !== undefined || req.body['content.en'] !== undefined) {
+      updateData.content = {
+        ru: req.body['content.ru'] || '',
+        en: req.body['content.en'] || ''
+      };
+    }
     
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
@@ -108,5 +119,25 @@ export const deleteManual = async (req, res) => {
     res.json({ message: 'Manual deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting manual' });
+  }
+};
+
+export const getManualById = async (req, res) => {
+  try {
+    const manual = await Manual.findById(req.params.id).populate('filter_id');
+    if (!manual) return res.status(404).json({ message: 'Manual not found' });
+    res.json(manual);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching manual' });
+  }
+};
+
+export const uploadManualImage = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
+    const url = `/uploads/manuals/${req.file.filename}`;
+    res.json({ url });
+  } catch (error) {
+    res.status(500).json({ message: 'Error uploading image' });
   }
 };
