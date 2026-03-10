@@ -45,7 +45,7 @@ const googleAdsProductSchema = new mongoose.Schema({
     type: multilingualStringSchema,
     required: false
   },
-  get: {
+  receive: {
     type: multilingualStringSchema,
     required: false
   },

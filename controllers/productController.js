@@ -181,13 +181,13 @@ export const createGoogleAdsProduct = async (req, res) => {
       ru: req.body['inclusive.ru'] || '',
       en: req.body['inclusive.en'] || ''
     };
-    const get = {
-      ru: req.body['get.ru'] || '',
-      en: req.body['get.en'] || ''
+    const receive = {
+      ru: req.body['receive.ru'] || '',
+      en: req.body['receive.en'] || ''
     };
     const path_image = req.file ? `/uploads/${req.file.filename}` : '';
     
-    const productData = { type, title, sub_title, desc, inclusive, get, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
+    const productData = { type, title, sub_title, desc, inclusive, receive, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       productData.filter_id = filterId;
@@ -242,10 +242,10 @@ export const updateGoogleAdsProduct = async (req, res) => {
         en: req.body['inclusive.en'] || ''
       };
     }
-    if (req.body['get.ru'] || req.body['get.en']) {
-      updateData.get = {
-        ru: req.body['get.ru'] || '',
-        en: req.body['get.en'] || ''
+    if (req.body['receive.ru'] || req.body['receive.en']) {
+      updateData.receive = {
+        ru: req.body['receive.ru'] || '',
+        en: req.body['receive.en'] || ''
       };
     }
     
