@@ -53,6 +53,10 @@ const serviceSchema = new mongoose.Schema({
   path_image: {
     type: String,
     default: ''
+  },
+  link: {
+    type: String,
+    default: ''
   }
 }, { timestamps: true });
 

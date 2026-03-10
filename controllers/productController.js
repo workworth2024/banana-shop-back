@@ -60,8 +60,11 @@ export const createYoutubeProduct = async (req, res) => {
       en: req.body['desc.en'] || ''
     };
     const path_image = req.file ? `/uploads/${req.file.filename}` : '';
+    const link = req.body.link || '';
+    const wholesale_price = req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null;
+    const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
     
-    const productData = { type, title, desc, price, counts, geo, path_image };
+    const productData = { type, title, desc, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       productData.filter_id = filterId;
@@ -78,7 +81,12 @@ export const updateYoutubeProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const { type, price, counts, geo } = req.body;
-    const updateData = { type, price, counts, geo };
+    const updateData = {
+      type, price, counts, geo,
+      link: req.body.link || '',
+      wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
+      count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null
+    };
     
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
@@ -154,6 +162,9 @@ export const getGoogleAdsProducts = async (req, res) => {
 export const createGoogleAdsProduct = async (req, res) => {
   try {
     const { type, price, counts, geo } = req.body;
+    const link = req.body.link || '';
+    const wholesale_price = req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null;
+    const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
     const title = {
       ru: req.body['title.ru'] || '',
       en: req.body['title.en'] || ''
@@ -176,7 +187,7 @@ export const createGoogleAdsProduct = async (req, res) => {
     };
     const path_image = req.file ? `/uploads/${req.file.filename}` : '';
     
-    const productData = { type, title, sub_title, desc, inclusive, get, price, counts, geo, path_image };
+    const productData = { type, title, sub_title, desc, inclusive, get, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       productData.filter_id = filterId;
@@ -193,7 +204,12 @@ export const updateGoogleAdsProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const { type, price, counts, geo } = req.body;
-    const updateData = { type, price, counts, geo };
+    const updateData = {
+      type, price, counts, geo,
+      link: req.body.link || '',
+      wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
+      count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null
+    };
     
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {

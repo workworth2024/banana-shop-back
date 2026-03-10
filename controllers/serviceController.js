@@ -61,8 +61,9 @@ export const createService = async (req, res) => {
       en: req.body['sub_desc.en'] || ''
     };
     const path_image = req.file ? `/uploads/${req.file.filename}` : '';
+    const link = req.body.link || '';
     
-    const serviceData = { title, sub_title, desc, sub_desc, price, path_image };
+    const serviceData = { title, sub_title, desc, sub_desc, price, path_image, link };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       serviceData.filter_id = filterId;
@@ -80,7 +81,7 @@ export const updateService = async (req, res) => {
   try {
     const { id } = req.params;
     const { price } = req.body;
-    const updateData = { price };
+    const updateData = { price, link: req.body.link || '' };
     
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {

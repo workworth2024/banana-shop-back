@@ -1,5 +1,5 @@
 import express from 'express';
-import { getManuals } from '../../controllers/manualController.js';
+import { getManuals, getManualById } from '../../controllers/manualController.js';
 
 const router = express.Router();
 
@@ -14,5 +14,6 @@ const verifyPublicToken = (req, res, next) => {
 };
 
 router.get('/', verifyPublicToken, getManuals);
+router.get('/:id', verifyPublicToken, getManualById);
 
 export default router;
