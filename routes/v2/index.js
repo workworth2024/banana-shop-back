@@ -4,6 +4,8 @@ import productRoutes from './productRoutes.js';
 import youtubeRoutes from './youtubeRoutes.js';
 import manualRoutes from './manualRoutes.js';
 import reviewRoutes from './reviewRoutes.js';
+import contactFormRoutes from './contactFormRoutes.js';
+import preorderRoutes from './preorderRoutes.js';
 
 const router = express.Router();
 
@@ -16,5 +18,7 @@ router.use('/products', productRoutes);
 router.use('/youtube', youtubeRoutes);
 router.use('/manuals', manualRoutes);
 router.use('/reviews', reviewRoutes);
+router.use('/contact-forms', contactFormRoutes);
+router.use('/preorders', preorderRoutes);
 
 export default router;

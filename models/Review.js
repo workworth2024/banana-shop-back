@@ -14,7 +14,8 @@ const reviewSchema = new mongoose.Schema({
       message: 'Текст должен быть заполнен на русском или английском языке'
     }
   },
-  link: { type: String, default: '' }
+  link: { type: String, default: '' },
+  image: { type: String, default: '' }
 }, { timestamps: true });
 
 export default mongoose.model('Review', reviewSchema);

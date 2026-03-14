@@ -62,8 +62,16 @@ export const createService = async (req, res) => {
     };
     const path_image = req.file ? `/uploads/${req.file.filename}` : '';
     const link = req.body.link || '';
+    const necessary_data = {
+      ru: req.body['necessary_data.ru'] || '',
+      en: req.body['necessary_data.en'] || ''
+    };
+    const implementation_period = {
+      ru: req.body['implementation_period.ru'] || '',
+      en: req.body['implementation_period.en'] || ''
+    };
     
-    const serviceData = { title, sub_title, desc, sub_desc, price, path_image, link };
+    const serviceData = { title, sub_title, desc, sub_desc, price, path_image, link, necessary_data, implementation_period };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {
       serviceData.filter_id = filterId;
@@ -81,7 +89,18 @@ export const updateService = async (req, res) => {
   try {
     const { id } = req.params;
     const { price } = req.body;
-    const updateData = { price, link: req.body.link || '' };
+    const updateData = {
+      price,
+      link: req.body.link || '',
+      necessary_data: {
+        ru: req.body['necessary_data.ru'] || '',
+        en: req.body['necessary_data.en'] || ''
+      },
+      implementation_period: {
+        ru: req.body['implementation_period.ru'] || '',
+        en: req.body['implementation_period.en'] || ''
+      }
+    };
     
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) {

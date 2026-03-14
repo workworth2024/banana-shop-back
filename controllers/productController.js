@@ -1,6 +1,8 @@
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 
+import mongoose from 'mongoose';
+
 // Helper for date filter
 const addDateFilter = (query, startDate, endDate) => {
   if (startDate || endDate) {
@@ -14,16 +16,25 @@ const addDateFilter = (query, startDate, endDate) => {
   }
 };
 
+// Helper to build search query (title + _id)
+const buildSearchQuery = (search) => {
+  const conditions = [
+    { 'title.ru': { $regex: search, $options: 'i' } },
+    { 'title.en': { $regex: search, $options: 'i' } }
+  ];
+  if (mongoose.isValidObjectId(search)) {
+    conditions.push({ _id: new mongoose.Types.ObjectId(search) });
+  }
+  return { $or: conditions };
+};
+
 // Youtube Products
 export const getYoutubeProducts = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter, type, geo, startDate, endDate } = req.query;
     const query = {};
     if (search) {
-      query.$or = [
-        { 'title.ru': { $regex: search, $options: 'i' } },
-        { 'title.en': { $regex: search, $options: 'i' } }
-      ];
+      Object.assign(query, buildSearchQuery(search));
     }
     if (filter) query.filter_id = filter;
     if (type) query.type = type;
@@ -131,10 +142,7 @@ export const getGoogleAdsProducts = async (req, res) => {
     const { page = 1, limit = 10, search = '', filter, type, geo, startDate, endDate } = req.query;
     const query = {};
     if (search) {
-      query.$or = [
-        { 'title.ru': { $regex: search, $options: 'i' } },
-        { 'title.en': { $regex: search, $options: 'i' } }
-      ];
+      Object.assign(query, buildSearchQuery(search));
     }
     if (filter) query.filter_id = filter;
     if (type) query.type = type;

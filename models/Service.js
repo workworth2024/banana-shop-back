@@ -57,6 +57,14 @@ const serviceSchema = new mongoose.Schema({
   link: {
     type: String,
     default: ''
+  },
+  necessary_data: {
+    type: multilingualStringSchema,
+    required: false
+  },
+  implementation_period: {
+    type: multilingualStringSchema,
+    required: false
   }
 }, { timestamps: true });
 

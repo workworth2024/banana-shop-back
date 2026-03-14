@@ -3,6 +3,7 @@ import {
   getReviews, createReview, updateReview, deleteReview
 } from '../../controllers/reviewController.js';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
+import upload from '../../middlewares/uploadMiddleware.js';
 
 const router = express.Router();
 
@@ -16,8 +17,8 @@ const canManageReviews = (req, res, next) => {
 };
 
 router.get('/', verifyToken, canManageReviews, getReviews);
-router.post('/', verifyToken, canManageReviews, createReview);
-router.put('/:id', verifyToken, canManageReviews, updateReview);
+router.post('/', verifyToken, canManageReviews, upload.single('image'), createReview);
+router.put('/:id', verifyToken, canManageReviews, upload.single('image'), updateReview);
 router.delete('/:id', verifyToken, canManageReviews, deleteReview);
 
 export default router;
