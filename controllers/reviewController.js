@@ -29,16 +29,17 @@ export const getReviews = async (req, res) => {
 export const createReview = async (req, res) => {
   try {
     const text = {
-      ru: req.body['text.ru'] || '',
-      en: req.body['text.en'] || ''
+      ru: req.body?.['text.ru'] || '',
+      en: req.body?.['text.en'] || ''
     };
-    const link = req.body.link || '';
+    const link = req.body?.link || '';
+    const image = req.file ? `/uploads/reviews/${req.file.filename}` : '';
 
-    const review = await Review.create({ text, link });
+    const review = await Review.create({ text, link, image });
     res.status(201).json(review);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Error creating review' });
+    console.error('createReview error:', error.message, error.stack);
+    res.status(500).json({ message: error.message || 'Error creating review' });
   }
 };
 
@@ -46,17 +47,22 @@ export const updateReview = async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = {
-      link: req.body.link || '',
+      link: req.body?.link || '',
       text: {
-        ru: req.body['text.ru'] || '',
-        en: req.body['text.en'] || ''
+        ru: req.body?.['text.ru'] || '',
+        en: req.body?.['text.en'] || ''
       }
     };
+
+    if (req.file) {
+      updateData.image = `/uploads/reviews/${req.file.filename}`;
+    }
 
     const review = await Review.findByIdAndUpdate(id, updateData, { new: true });
     res.json(review);
   } catch (error) {
-    res.status(500).json({ message: 'Error updating review' });
+    console.error('updateReview error:', error.message, error.stack);
+    res.status(500).json({ message: error.message || 'Error updating review' });
   }
 };
 
