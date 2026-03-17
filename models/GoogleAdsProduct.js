@@ -14,7 +14,16 @@ const multilingualStringSchema = new mongoose.Schema({
 const googleAdsProductSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['self-farm', 'autofarm', 'spend'],
+    enum: [
+      'self-reg-farm-no-num',
+      'self-reg-farm-rent-num',
+      'verif-identity-only',
+      'low-bill-spend-10',
+      'high-bill-spend-20',
+      'high-bill-wp-spend',
+      'g2rs-finance-spend',
+      'old-spended-heavy'
+    ],
     required: true
   },
   title: {
