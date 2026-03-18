@@ -22,7 +22,8 @@ const googleAdsProductSchema = new mongoose.Schema({
       'high-bill-spend-20',
       'high-bill-wp-spend',
       'g2rs-finance-spend',
-      'old-spended-heavy'
+      'old-spended-heavy',
+      'no-farm'
     ],
     required: true
   },
