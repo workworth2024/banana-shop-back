@@ -48,6 +48,11 @@ const manualSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Filter',
     required: false
+  },
+  tag_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ManualTag',
+    required: false
   }
 }, { timestamps: true });
 

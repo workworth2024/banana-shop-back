@@ -2,7 +2,7 @@ import Manual from '../models/Manual.js';
 
 export const getManuals = async (req, res) => {
   try {
-    const { page = 1, limit = 10, search = '', filter, startDate, endDate } = req.query;
+    const { page = 1, limit = 10, search = '', filter, tag, startDate, endDate } = req.query;
     const query = {};
     
     if (search) {
@@ -15,6 +15,7 @@ export const getManuals = async (req, res) => {
     }
     
     if (filter) query.filter_id = filter;
+    if (tag) query.tag_id = tag;
 
     if (startDate || endDate) {
       query.createdAt = {};
@@ -29,6 +30,7 @@ export const getManuals = async (req, res) => {
     const skip = (page - 1) * limit;
     const manuals = await Manual.find(query)
       .populate('filter_id')
+      .populate('tag_id')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -63,6 +65,10 @@ export const createManual = async (req, res) => {
     if (filterId && filterId.trim()) {
       manualData.filter_id = filterId;
     }
+    const tagId = req.body.tag_id;
+    if (tagId && tagId.trim()) {
+      manualData.tag_id = tagId;
+    }
     
     const manual = await Manual.create(manualData);
     res.status(201).json(manual);
@@ -90,6 +96,12 @@ export const updateManual = async (req, res) => {
       updateData.filter_id = filterId;
     } else {
       updateData.filter_id = null;
+    }
+    const tagId = req.body.tag_id;
+    if (tagId && tagId.trim()) {
+      updateData.tag_id = tagId;
+    } else {
+      updateData.tag_id = null;
     }
     
     if (req.body['title.ru'] || req.body['title.en']) {
@@ -124,7 +136,7 @@ export const deleteManual = async (req, res) => {
 
 export const getManualById = async (req, res) => {
   try {
-    const manual = await Manual.findById(req.params.id).populate('filter_id');
+    const manual = await Manual.findById(req.params.id).populate('filter_id').populate('tag_id');
     if (!manual) return res.status(404).json({ message: 'Manual not found' });
     res.json(manual);
   } catch (error) {
