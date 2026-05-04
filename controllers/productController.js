@@ -18,9 +18,10 @@ const addDateFilter = (query, startDate, endDate) => {
 
 // Helper to build search query (title + _id)
 const buildSearchQuery = (search) => {
+  const safeSearch = String(search).slice(0, 200);
   const conditions = [
-    { 'title.ru': { $regex: search, $options: 'i' } },
-    { 'title.en': { $regex: search, $options: 'i' } }
+    { 'title.ru': { $regex: safeSearch, $options: 'i' } },
+    { 'title.en': { $regex: safeSearch, $options: 'i' } }
   ];
   if (mongoose.isValidObjectId(search)) {
     conditions.push({ _id: new mongoose.Types.ObjectId(search) });

@@ -11,7 +11,7 @@ export const verifyToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
     // Check session in DB
     const session = await Session.findOne({ token, userId: decoded.id });

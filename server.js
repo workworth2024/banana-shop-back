@@ -1,21 +1,50 @@
 import express from 'express';
+import { createServer } from 'http';
+import { Server as SocketIO } from 'socket.io';
 import mongoose from 'mongoose';
 import cors from 'cors';
+import helmet from 'helmet';
 import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import Role from './models/Role.js';
+import Currency from './models/Currency.js';
 
 dotenv.config();
 
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET is not set. Refusing to start.');
+  process.exit(1);
+}
+
 const app = express();
+const httpServer = createServer(app);
 const PORT = process.env.PORT || 8000;
 
-// Middleware
-app.use(cors({
+const corsOptions = {
   origin: process.env.WHITE_LIST?.split(',') || [],
   credentials: true
-}));
-app.use(express.json());
+};
+
+export const io = new SocketIO(httpServer, {
+  cors: corsOptions
+});
+
+io.of('/customer').on('connection', (socket) => {
+  const customerId = socket.handshake.auth?.customerId;
+  if (customerId) {
+    socket.join(`customer:${customerId}`);
+  }
+  socket.on('disconnect', () => {});
+});
+
+io.of('/support').on('connection', (socket) => {
+  socket.on('disconnect', () => {});
+});
+
+// Middleware
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 app.use('/uploads', express.static('uploads'));
 
@@ -24,6 +53,7 @@ mongoose.connect(process.env.MONGO_URI)
   .then(async () => {
     console.log('Connected to MongoDB');
     await seedRoles();
+    await seedCurrencies();
   })
   .catch(err => console.error('MongoDB connection error:', err));
 
@@ -45,6 +75,14 @@ async function seedRoles() {
   }
 }
 
+async function seedCurrencies() {
+  const usd = await Currency.findOne({ symbol: 'USD' });
+  if (!usd) {
+    await Currency.create({ name: 'US Dollar', symbol: 'USD', isDefault: true });
+    console.log('Currency USD created');
+  }
+}
+
 // Routes
 import v2Routes from './routes/v2/index.js';
 import v3Routes from './routes/v3/index.js';
@@ -55,6 +93,11 @@ app.get('/', (req, res) => {
   res.send('Banana Shop API');
 });
 
-app.listen(PORT, () => {
+app.use((err, req, res, next) => {
+  console.error('[Error]', err.message);
+  res.status(err.status || 500).json({ message: 'Internal server error' });
+});
+
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

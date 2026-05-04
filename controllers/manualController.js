@@ -3,14 +3,15 @@ import Manual from '../models/Manual.js';
 export const getManuals = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter, tag, startDate, endDate } = req.query;
+    const safeSearch = String(search).slice(0, 200);
     const query = {};
     
-    if (search) {
+    if (safeSearch) {
       query.$or = [
-        { 'title.ru': { $regex: search, $options: 'i' } },
-        { 'title.en': { $regex: search, $options: 'i' } },
-        { 'desc.ru': { $regex: search, $options: 'i' } },
-        { 'desc.en': { $regex: search, $options: 'i' } }
+        { 'title.ru': { $regex: safeSearch, $options: 'i' } },
+        { 'title.en': { $regex: safeSearch, $options: 'i' } },
+        { 'desc.ru': { $regex: safeSearch, $options: 'i' } },
+        { 'desc.en': { $regex: safeSearch, $options: 'i' } }
       ];
     }
     

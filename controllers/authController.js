@@ -5,7 +5,7 @@ import Role from '../models/Role.js';
 import Session from '../models/Session.js';
 
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET || 'secret', {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: '24h'
   });
 };
@@ -23,7 +23,7 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 12);
     const newRole = await Role.findOne({ name: 'new' });
 
     const newUser = await User.create({
@@ -95,7 +95,8 @@ export const login = async (req, res) => {
     res.cookie('token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 24 * 60 * 60 * 1000 // 24h
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      maxAge: 24 * 60 * 60 * 1000
     });
 
     return res.status(200).json({
@@ -106,8 +107,7 @@ export const login = async (req, res) => {
         email: user.email,
         role: user.role_id.name,
         access: user.role_id.access
-      },
-      token
+      }
     });
   } catch (error) {
     console.error(error);
