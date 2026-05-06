@@ -5,7 +5,7 @@ import Role from '../models/Role.js';
 import Session from '../models/Session.js';
 
 const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
+  return jwt.sign({ id, type: 'admin' }, process.env.JWT_SECRET, {
     expiresIn: '24h'
   });
 };
@@ -94,8 +94,8 @@ export const login = async (req, res) => {
 
     res.cookie('token', token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      secure: true,
+      sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000
     });
 

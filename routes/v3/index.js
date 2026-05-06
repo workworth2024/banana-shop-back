@@ -11,6 +11,9 @@ import manualTagRoutes from './manualTagRoutes.js';
 import reviewRoutes from './reviewRoutes.js';
 import contactFormRoutes from './contactFormRoutes.js';
 import preorderRoutes from './preorderRoutes.js';
+import digitalItemRoutes from './digitalItemRoutes.js';
+import orderRoutes from './orderRoutes.js';
+import notificationRoutes from './notificationRoutes.js';
 
 const router = express.Router();
 
@@ -26,5 +29,8 @@ router.use('/manual-tags', manualTagRoutes);
 router.use('/reviews', reviewRoutes);
 router.use('/contact-forms', contactFormRoutes);
 router.use('/preorders', preorderRoutes);
+router.use('/digital-items', digitalItemRoutes);
+router.use('/orders', orderRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;

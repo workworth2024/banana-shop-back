@@ -12,7 +12,11 @@ export const verifyToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
+
+    if (decoded.type !== 'admin') {
+      return res.status(401).json({ message: 'Invalid token type' });
+    }
+
     // Check session in DB
     const session = await Session.findOne({ token, userId: decoded.id });
     if (!session || session.expire < new Date()) {

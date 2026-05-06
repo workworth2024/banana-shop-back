@@ -2,6 +2,7 @@ import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import Transaction from '../models/Transaction.js';
 import bcrypt from 'bcryptjs';
+import { io } from '../server.js';
 
 export const getCustomers = async (req, res) => {
   try {
@@ -112,6 +113,10 @@ export const adjustBalance = async (req, res) => {
       amount: parsed,
       currency: 'USD',
       note: note || null
+    });
+
+    io.of('/customer').to(`customer:${customer._id}`).emit('balance_updated', {
+      balance: customer.balance
     });
 
     return res.status(200).json({

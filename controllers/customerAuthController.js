@@ -19,8 +19,8 @@ const generateToken = (id) => {
 const setAuthCookie = (res, token) => {
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    secure: true,
+    sameSite: 'strict',
     maxAge: COOKIE_MAX_AGE
   });
 };

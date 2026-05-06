@@ -17,6 +17,7 @@ if (!process.env.JWT_SECRET) {
 }
 
 const app = express();
+app.set('trust proxy', 1);
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 8000;
 
@@ -46,7 +47,12 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', (req, res, next) => {
+  if (req.path.startsWith('/digital-items/')) {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+  next();
+}, express.static('uploads'));
 
 // Database connection
 mongoose.connect(process.env.MONGO_URI)

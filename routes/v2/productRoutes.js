@@ -1,5 +1,5 @@
 import express from 'express';
-import { getGoogleAdsProducts } from '../../controllers/productController.js';
+import { getGoogleAdsProducts, getGoogleAdsProductById } from '../../controllers/productController.js';
 
 const router = express.Router();
 
@@ -15,5 +15,6 @@ const verifyPublicToken = (req, res, next) => {
 };
 
 router.get('/google-ads', verifyPublicToken, getGoogleAdsProducts);
+router.get('/google-ads/:id', verifyPublicToken, getGoogleAdsProductById);
 
 export default router;
