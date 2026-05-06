@@ -19,12 +19,11 @@ const getProductModel = (productType) => {
   return null;
 };
 
-const syncProductCounts = async (productId, productType, session = null) => {
+const syncProductCounts = async (productId, productType) => {
   const ProductModel = getProductModel(productType);
   if (!ProductModel) return;
-  const opts = session ? { session } : {};
-  const count = await DigitalItem.countDocuments({ productId, productType, status: 'available' }, opts);
-  await ProductModel.findByIdAndUpdate(productId, { counts: count }, opts);
+  const count = await DigitalItem.countDocuments({ productId, productType, status: 'available' });
+  await ProductModel.findByIdAndUpdate(productId, { counts: count });
   return count;
 };
 
@@ -153,61 +152,60 @@ export const deleteDigitalItem = async (req, res) => {
 };
 
 export const purchaseProduct = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  const { productId, productType, quantity = 1 } = req.body;
+  const qty = Math.max(1, Math.min(50, parseInt(quantity) || 1));
+  const customerId = req.customer._id;
+
+  if (!mongoose.isValidObjectId(productId)) {
+    return res.status(400).json({ message: 'Invalid product ID' });
+  }
+
+  const ProductModel = getProductModel(productType);
+  if (!ProductModel) {
+    return res.status(400).json({ message: 'Invalid product type' });
+  }
+
+  const product = await ProductModel.findById(productId);
+  if (!product) return res.status(404).json({ message: 'Product not found' });
+
+  const totalAmount = parseFloat((product.price * qty).toFixed(2));
+
+  const customer = await CustomerUser.findOneAndUpdate(
+    { _id: customerId, balance: { $gte: totalAmount } },
+    { $inc: { balance: -totalAmount } },
+    { new: true }
+  );
+
+  if (!customer) {
+    return res.status(400).json({ message: 'Insufficient balance' });
+  }
+
+  const reservedIds = [];
   try {
-    const { productId, productType, quantity = 1 } = req.body;
-    const qty = Math.max(1, Math.min(50, parseInt(quantity) || 1));
-    const customerId = req.customer._id;
-
-    if (!mongoose.isValidObjectId(productId)) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Invalid product ID' });
+    for (let i = 0; i < qty; i++) {
+      const item = await DigitalItem.findOneAndUpdate(
+        { productId, productType, status: 'available' },
+        { $set: { status: 'sold' } },
+        { new: true }
+      );
+      if (!item) {
+        if (reservedIds.length > 0) {
+          await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { status: 'available', orderId: null } });
+        }
+        await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } });
+        return res.status(400).json({ message: `Only ${reservedIds.length} items available` });
+      }
+      reservedIds.push(item._id);
     }
-
-    const ProductModel = getProductModel(productType);
-    if (!ProductModel) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Invalid product type' });
-    }
-
-    const product = await ProductModel.findById(productId).session(session);
-    if (!product) {
-      await session.abortTransaction();
-      return res.status(404).json({ message: 'Product not found' });
-    }
-
-    const totalAmount = parseFloat((product.price * qty).toFixed(2));
-
-    const customer = await CustomerUser.findById(customerId).session(session);
-    if (customer.balance < totalAmount) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: 'Insufficient balance' });
-    }
-
-    const availableCount = await DigitalItem.countDocuments({ productId, productType, status: 'available' }).session(session);
-    if (availableCount < qty) {
-      await session.abortTransaction();
-      return res.status(400).json({ message: `Only ${availableCount} items available` });
-    }
-
-    const digitalItems = await DigitalItem.find(
-      { productId, productType, status: 'available' },
-      null,
-      { session }
-    ).limit(qty);
-
-    const itemIds = digitalItems.map(i => i._id);
-    await DigitalItem.updateMany({ _id: { $in: itemIds } }, { $set: { status: 'sold' } }, { session });
 
     const titleStr = product.title?.ru || product.title?.en || product.name || '';
 
-    const [order] = await Order.create([{
+    const order = await Order.create({
       customerId,
       productId,
       productType,
-      digitalItemId: itemIds[0],
-      digitalItemIds: itemIds,
+      digitalItemId: reservedIds[0],
+      digitalItemIds: reservedIds,
       quantity: qty,
       productSnapshot: {
         title: titleStr,
@@ -220,34 +218,28 @@ export const purchaseProduct = async (req, res) => {
       status: 'delivered',
       paidAt: new Date(),
       deliveredAt: new Date()
-    }], { session });
+    });
 
-    await DigitalItem.updateMany({ _id: { $in: itemIds } }, { $set: { orderId: order._id } }, { session });
+    await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { orderId: order._id } });
 
-    const balanceBefore = customer.balance;
-    customer.balance = parseFloat((customer.balance - totalAmount).toFixed(2));
-    await customer.save({ session });
-
-    await Transaction.create([{
+    await Transaction.create({
       userId: customerId,
       type: 'order',
       status: 'success',
       amount: -totalAmount,
       currency: 'USD',
       note: `Order ${order.uid} x${qty}`
-    }], { session });
+    });
 
-    await syncProductCounts(productId, productType, session);
+    await syncProductCounts(productId, productType);
 
-    const [notif] = await Notification.create([{
+    const notif = await Notification.create({
       userId: customerId,
       type: 'order_delivered',
       title: 'Товар доставлен',
       message: `Вы приобрели: ${titleStr}${qty > 1 ? ` (x${qty})` : ''}`,
       link: `/profile/orders/${order.uid}`
-    }], { session });
-
-    await session.commitTransaction();
+    });
 
     io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
       balance: customer.balance
@@ -272,10 +264,11 @@ export const purchaseProduct = async (req, res) => {
       }
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (reservedIds.length > 0) {
+      await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { status: 'available', orderId: null } }).catch(() => {});
+    }
+    await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } }).catch(() => {});
     console.error('[DigitalItem] purchase error:', error);
     return res.status(500).json({ message: 'Server error' });
-  } finally {
-    session.endSession();
   }
 };
