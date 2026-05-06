@@ -27,20 +27,20 @@ router.post(
   uploadDigitalItems
 );
 
+// Admin: download a specific item by uid (must come BEFORE :productType/:productId)
+router.get(
+  '/admin/download/:uid',
+  verifyToken,
+  canManageDigital,
+  downloadDigitalItem
+);
+
 // Admin: list digital items for a product
 router.get(
   '/admin/:productType/:productId',
   verifyToken,
   canManageDigital,
   getDigitalItems
-);
-
-// Admin: download a specific item by uid
-router.get(
-  '/admin/download/:uid',
-  verifyToken,
-  canManageDigital,
-  downloadDigitalItem
 );
 
 // Admin: delete an item by _id

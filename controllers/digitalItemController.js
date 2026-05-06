@@ -72,10 +72,17 @@ export const uploadDigitalItems = async (req, res) => {
 export const getDigitalItems = async (req, res) => {
   try {
     const { productId, productType } = req.params;
-    const { page = 1, limit = 20, status } = req.query;
+    const { page = 1, limit = 20, status, search } = req.query;
 
     const query = { productId, productType };
     if (status) query.status = status;
+    if (search) {
+      const safe = String(search).slice(0, 100);
+      query.$or = [
+        { originalName: { $regex: safe, $options: 'i' } },
+        { uid: { $regex: safe, $options: 'i' } }
+      ];
+    }
 
     const skip = (Number(page) - 1) * Number(limit);
 

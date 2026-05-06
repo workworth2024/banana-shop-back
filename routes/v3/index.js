@@ -14,6 +14,7 @@ import preorderRoutes from './preorderRoutes.js';
 import digitalItemRoutes from './digitalItemRoutes.js';
 import orderRoutes from './orderRoutes.js';
 import notificationRoutes from './notificationRoutes.js';
+import healthRoutes from './healthRoutes.js';
 
 const router = express.Router();
 
@@ -32,5 +33,6 @@ router.use('/preorders', preorderRoutes);
 router.use('/digital-items', digitalItemRoutes);
 router.use('/orders', orderRoutes);
 router.use('/notifications', notificationRoutes);
+router.use('/health', healthRoutes);
 
 export default router;

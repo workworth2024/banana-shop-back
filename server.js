@@ -8,8 +8,17 @@ import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import Role from './models/Role.js';
 import Currency from './models/Currency.js';
+import { logError } from './controllers/healthController.js';
 
 dotenv.config();
+
+const _origError = console.error.bind(console);
+console.error = (...args) => {
+  _origError(...args);
+  const msg = args.map(a => (a instanceof Error ? a.message : String(a))).join(' ');
+  const stack = args.find(a => a instanceof Error)?.stack || null;
+  logError(msg, stack);
+};
 
 if (!process.env.JWT_SECRET) {
   console.error('FATAL: JWT_SECRET is not set. Refusing to start.');
