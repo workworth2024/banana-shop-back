@@ -156,7 +156,8 @@ export const purchaseProduct = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { productId, productType } = req.body;
+    const { productId, productType, quantity = 1 } = req.body;
+    const qty = Math.max(1, Math.min(50, parseInt(quantity) || 1));
     const customerId = req.customer._id;
 
     if (!mongoose.isValidObjectId(productId)) {
@@ -176,22 +177,28 @@ export const purchaseProduct = async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
+    const totalAmount = parseFloat((product.price * qty).toFixed(2));
+
     const customer = await CustomerUser.findById(customerId).session(session);
-    if (customer.balance < product.price) {
+    if (customer.balance < totalAmount) {
       await session.abortTransaction();
       return res.status(400).json({ message: 'Insufficient balance' });
     }
 
-    const digitalItem = await DigitalItem.findOneAndUpdate(
-      { productId, productType, status: 'available' },
-      { $set: { status: 'sold' } },
-      { returnDocument: 'after', session }
-    );
-
-    if (!digitalItem) {
+    const availableCount = await DigitalItem.countDocuments({ productId, productType, status: 'available' }).session(session);
+    if (availableCount < qty) {
       await session.abortTransaction();
-      return res.status(400).json({ message: 'No items available for this product' });
+      return res.status(400).json({ message: `Only ${availableCount} items available` });
     }
+
+    const digitalItems = await DigitalItem.find(
+      { productId, productType, status: 'available' },
+      null,
+      { session }
+    ).limit(qty);
+
+    const itemIds = digitalItems.map(i => i._id);
+    await DigitalItem.updateMany({ _id: { $in: itemIds } }, { $set: { status: 'sold' } }, { session });
 
     const titleStr = product.title?.ru || product.title?.en || product.name || '';
 
@@ -199,32 +206,35 @@ export const purchaseProduct = async (req, res) => {
       customerId,
       productId,
       productType,
-      digitalItemId: digitalItem._id,
+      digitalItemId: itemIds[0],
+      digitalItemIds: itemIds,
+      quantity: qty,
       productSnapshot: {
         title: titleStr,
         price: product.price,
         image: product.path_image || product.image || ''
       },
-      amount: product.price,
+      amount: totalAmount,
       currency: 'USD',
+      paymentMethod: 'balance',
       status: 'delivered',
       paidAt: new Date(),
       deliveredAt: new Date()
     }], { session });
 
-    digitalItem.orderId = order._id;
-    await digitalItem.save({ session });
+    await DigitalItem.updateMany({ _id: { $in: itemIds } }, { $set: { orderId: order._id } }, { session });
 
-    customer.balance = parseFloat((customer.balance - product.price).toFixed(2));
+    const balanceBefore = customer.balance;
+    customer.balance = parseFloat((customer.balance - totalAmount).toFixed(2));
     await customer.save({ session });
 
     await Transaction.create([{
       userId: customerId,
       type: 'order',
       status: 'success',
-      amount: -product.price,
+      amount: -totalAmount,
       currency: 'USD',
-      note: `Order ${order.uid}`
+      note: `Order ${order.uid} x${qty}`
     }], { session });
 
     await syncProductCounts(productId, productType, session);
@@ -233,7 +243,7 @@ export const purchaseProduct = async (req, res) => {
       userId: customerId,
       type: 'order_delivered',
       title: 'Товар доставлен',
-      message: `Вы приобрели: ${titleStr}`,
+      message: `Вы приобрели: ${titleStr}${qty > 1 ? ` (x${qty})` : ''}`,
       link: `/profile/orders/${order.uid}`
     }], { session });
 
@@ -257,7 +267,8 @@ export const purchaseProduct = async (req, res) => {
       order: {
         uid: order.uid,
         status: order.status,
-        amount: order.amount
+        amount: order.amount,
+        quantity: order.quantity
       }
     });
   } catch (error) {

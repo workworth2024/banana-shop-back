@@ -7,6 +7,11 @@ const orderSchema = new mongoose.Schema({
     unique: true,
     default: () => 'ORD-' + crypto.randomBytes(5).toString('hex').toUpperCase()
   },
+  accessKey: {
+    type: String,
+    unique: true,
+    default: () => crypto.randomBytes(20).toString('hex')
+  },
   customerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'CustomerUser',
@@ -27,6 +32,15 @@ const orderSchema = new mongoose.Schema({
     ref: 'DigitalItem',
     default: null
   },
+  digitalItemIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DigitalItem'
+  }],
+  quantity: {
+    type: Number,
+    default: 1,
+    min: 1
+  },
   productSnapshot: {
     title: { type: String, default: '' },
     price: { type: Number, default: 0 },
@@ -41,10 +55,15 @@ const orderSchema = new mongoose.Schema({
     type: String,
     default: 'USD'
   },
+  paymentMethod: {
+    type: String,
+    enum: ['balance', 'crypto'],
+    default: 'balance'
+  },
   status: {
     type: String,
-    enum: ['pending', 'paid', 'delivered', 'cancelled'],
-    default: 'pending'
+    enum: ['unpaid', 'pending', 'paid', 'delivered', 'cancelled', 'replaced'],
+    default: 'unpaid'
   },
   paidAt: {
     type: Date,
@@ -58,5 +77,6 @@ const orderSchema = new mongoose.Schema({
 
 orderSchema.index({ customerId: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
+orderSchema.index({ accessKey: 1 });
 
 export default mongoose.model('Order', orderSchema);

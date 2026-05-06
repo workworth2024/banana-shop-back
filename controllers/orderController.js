@@ -1,4 +1,6 @@
 import fs from 'fs';
+import path from 'path';
+import archiver from 'archiver';
 import Order from '../models/Order.js';
 import DigitalItem from '../models/DigitalItem.js';
 
@@ -35,7 +37,7 @@ export const getMyOrders = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(Number(limit))
-      .select('-digitalItemId');
+      .select('-digitalItemId -digitalItemIds -accessKey');
 
     const total = await Order.countDocuments(query);
 
@@ -56,7 +58,7 @@ export const getMyOrder = async (req, res) => {
     const order = await Order.findOne({
       uid: req.params.uid,
       customerId: req.customer._id
-    }).select('-digitalItemId');
+    }).select('-digitalItemId -digitalItemIds');
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
@@ -77,19 +79,40 @@ export const downloadMyItem = async (req, res) => {
 
     if (!order) return res.status(404).json({ message: 'Order not found or not delivered' });
 
-    const item = await DigitalItem.findById(order.digitalItemId);
-    if (!item) return res.status(404).json({ message: 'File record not found' });
+    const itemIds = order.digitalItemIds?.length ? order.digitalItemIds : (order.digitalItemId ? [order.digitalItemId] : []);
 
-    if (!fs.existsSync(item.filePath)) {
-      return res.status(404).json({ message: 'File not found on disk' });
+    if (!itemIds.length) return res.status(404).json({ message: 'No files in this order' });
+
+    const items = await DigitalItem.find({ _id: { $in: itemIds } });
+    const validItems = items.filter(i => fs.existsSync(i.filePath));
+
+    if (!validItems.length) return res.status(404).json({ message: 'Files not found on disk' });
+
+    if (validItems.length === 1) {
+      const item = validItems[0];
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', item.fileSize);
+      return fs.createReadStream(item.filePath).pipe(res);
     }
 
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', item.fileSize);
-    fs.createReadStream(item.filePath).pipe(res);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${order.uid}.zip"`);
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    archive.on('error', (err) => {
+      console.error('[Orders] zip error:', err);
+      if (!res.headersSent) res.status(500).end();
+    });
+    archive.pipe(res);
+
+    for (const item of validItems) {
+      archive.file(item.filePath, { name: item.originalName });
+    }
+
+    await archive.finalize();
   } catch (error) {
     console.error('[Orders] downloadMyItem error:', error);
-    return res.status(500).json({ message: 'Server error' });
+    if (!res.headersSent) return res.status(500).json({ message: 'Server error' });
   }
 };
