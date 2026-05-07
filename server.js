@@ -39,15 +39,39 @@ export const io = new SocketIO(httpServer, {
   cors: corsOptions
 });
 
-io.of('/customer').on('connection', (socket) => {
+export const onlineCustomers = new Set();
+
+io.of('/customer').on('connection', async (socket) => {
   const customerId = socket.handshake.auth?.customerId;
   if (customerId) {
     socket.join(`customer:${customerId}`);
+    onlineCustomers.add(String(customerId));
+    try {
+      const { default: CustomerUser } = await import('./models/CustomerUser.js');
+      await CustomerUser.findByIdAndUpdate(customerId, { lastSeen: new Date() });
+    } catch {}
   }
-  socket.on('disconnect', () => {});
+  socket.on('disconnect', () => {
+    if (customerId) {
+      const room = io.of('/customer').adapter.rooms?.get(`customer:${customerId}`);
+      if (!room || room.size === 0) {
+        onlineCustomers.delete(String(customerId));
+      }
+      try {
+        import('./models/CustomerUser.js').then(({ default: CustomerUser }) => {
+          CustomerUser.findByIdAndUpdate(customerId, { lastSeen: new Date() }).catch(() => {});
+        });
+      } catch {}
+    }
+  });
 });
 
 io.of('/support').on('connection', (socket) => {
+  socket.on('disconnect', () => {});
+});
+
+io.of('/admin').on('connection', (socket) => {
+  socket.join('admins');
   socket.on('disconnect', () => {});
 });
 
@@ -61,7 +85,7 @@ app.use('/uploads', (req, res, next) => {
     return res.status(403).json({ message: 'Forbidden' });
   }
   next();
-}, express.static('uploads'));
+}, express.static('uploads', { dotfiles: 'deny' }));
 
 // Database connection
 mongoose.connect(process.env.MONGO_URI)

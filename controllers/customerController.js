@@ -1,8 +1,10 @@
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import Transaction from '../models/Transaction.js';
+import Notification from '../models/Notification.js';
 import bcrypt from 'bcryptjs';
-import { io } from '../server.js';
+import { io, onlineCustomers } from '../server.js';
+import { createAdminNotif } from './adminNotifController.js';
 
 export const getCustomers = async (req, res) => {
   try {
@@ -35,8 +37,13 @@ export const getCustomers = async (req, res) => {
 
     const total = await CustomerUser.countDocuments(query);
 
+    const customersWithOnline = customers.map(c => ({
+      ...c.toObject(),
+      isOnline: onlineCustomers.has(String(c._id))
+    }));
+
     return res.status(200).json({
-      customers,
+      customers: customersWithOnline,
       total,
       pages: Math.ceil(total / Number(limit)),
       currentPage: Number(page)
@@ -119,6 +126,33 @@ export const adjustBalance = async (req, res) => {
       balance: customer.balance
     });
 
+    try {
+      const isDeposit = parsed >= 0;
+      const notif = await Notification.create({
+        userId: customer._id,
+        type: 'balance_updated',
+        title: isDeposit ? 'Баланс пополнен' : 'Списание с баланса',
+        message: isDeposit
+          ? `На ваш баланс зачислено $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`
+          : `С вашего баланса списано $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`,
+        link: '/profile/wallet'
+      });
+      io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
+        id: notif._id, type: notif.type, title: notif.title,
+        message: notif.message, link: notif.link, createdAt: notif.createdAt
+      });
+    } catch {}
+
+    const isDeposit = parsed >= 0;
+    createAdminNotif({
+      category: 'transaction',
+      type: isDeposit ? 'transaction_deposit' : 'transaction_payment',
+      title: isDeposit ? 'Пополнение баланса' : 'Списание с баланса',
+      message: `${customer.username}: ${isDeposit ? '+' : ''}$${parsed.toFixed(2)}${note ? ' — ' + note : ''}`,
+      link: '/transactions',
+      meta: { customerId: customer._id, amount: parsed }
+    });
+
     return res.status(200).json({
       message: 'Balance updated',
       balance: customer.balance
@@ -145,6 +179,60 @@ export const resetCustomerPassword = async (req, res) => {
     return res.status(200).json({ message: 'Password reset successfully' });
   } catch (error) {
     console.error('[CustomerController] resetPassword:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getAdminTransactions = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, search = '', type = '', startDate, endDate } = req.query;
+    const skip = (Number(page) - 1) * Number(limit);
+
+    const query = {};
+
+    if (type) query.type = type;
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = end;
+      }
+    }
+
+    if (search) {
+      const safe = String(search).slice(0, 100);
+      const matchingCustomers = await CustomerUser.find({
+        $or: [
+          { username: { $regex: safe, $options: 'i' } },
+          { uid: { $regex: safe, $options: 'i' } }
+        ]
+      }).select('_id').limit(50);
+      if (matchingCustomers.length) {
+        query.userId = { $in: matchingCustomers.map(c => c._id) };
+      } else {
+        query.uid = { $regex: safe, $options: 'i' };
+      }
+    }
+
+    const transactions = await Transaction.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate('userId', 'username uid');
+
+    const total = await Transaction.countDocuments(query);
+
+    return res.status(200).json({
+      transactions,
+      total,
+      pages: Math.ceil(total / Number(limit)),
+      currentPage: Number(page)
+    });
+  } catch (error) {
+    console.error('[CustomerController] getAdminTransactions:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 };

@@ -10,6 +10,7 @@ import Notification from '../models/Notification.js';
 import Transaction from '../models/Transaction.js';
 import CustomerUser from '../models/CustomerUser.js';
 import { io } from '../server.js';
+import { createAdminNotif } from './adminNotifController.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -199,6 +200,7 @@ export const purchaseProduct = async (req, res) => {
     }
 
     const titleStr = product.title?.ru || product.title?.en || product.name || '';
+    const descStr = product.desc?.ru || product.desc?.en || '';
 
     const order = await Order.create({
       customerId,
@@ -209,6 +211,9 @@ export const purchaseProduct = async (req, res) => {
       quantity: qty,
       productSnapshot: {
         title: titleStr,
+        description: descStr,
+        productType,
+        productSubType: product.type || '',
         price: product.price,
         image: product.path_image || product.image || ''
       },
@@ -252,6 +257,15 @@ export const purchaseProduct = async (req, res) => {
       message: notif.message,
       link: notif.link,
       createdAt: notif.createdAt
+    });
+
+    createAdminNotif({
+      category: 'order',
+      type: 'order_product',
+      title: 'Новая покупка',
+      message: `${customer.username} купил: ${titleStr}${qty > 1 ? ` (x${qty})` : ''} — $${totalAmount.toFixed(2)}`,
+      link: '/orders',
+      meta: { customerId, orderId: order._id, amount: totalAmount }
     });
 
     return res.status(200).json({

@@ -6,15 +6,17 @@ const router = express.Router();
 
 router.get('/transactions', verifyCustomer, async (req, res) => {
   try {
-    const { page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20, type, search } = req.query;
     const skip = (Number(page) - 1) * Number(limit);
 
-    const transactions = await Transaction.find({ userId: req.customer._id })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit));
+    const query = { userId: req.customer._id };
+    if (type) query.type = type;
+    if (search) query.note = { $regex: search, $options: 'i' };
 
-    const total = await Transaction.countDocuments({ userId: req.customer._id });
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
+      Transaction.countDocuments(query)
+    ]);
 
     return res.status(200).json({
       transactions,

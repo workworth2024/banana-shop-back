@@ -43,6 +43,9 @@ const orderSchema = new mongoose.Schema({
   },
   productSnapshot: {
     title: { type: String, default: '' },
+    description: { type: String, default: '' },
+    productType: { type: String, default: '' },
+    productSubType: { type: String, default: '' },
     price: { type: Number, default: 0 },
     image: { type: String, default: '' }
   },
@@ -62,9 +65,16 @@ const orderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['unpaid', 'pending', 'paid', 'delivered', 'cancelled', 'replaced'],
+    enum: ['unpaid', 'pending', 'paid', 'delivered', 'cancelled', 'replaced', 'waiting_replacement'],
     default: 'unpaid'
   },
+  replacements: [{
+    oldItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'DigitalItem' },
+    newItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'DigitalItem' },
+    adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reason: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now }
+  }],
   paidAt: {
     type: Date,
     default: null

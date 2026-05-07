@@ -61,6 +61,10 @@ const customerUserSchema = new mongoose.Schema({
   status: {
     type: Boolean,
     default: true
+  },
+  lastSeen: {
+    type: Date,
+    default: null
   }
 }, { timestamps: true });
 

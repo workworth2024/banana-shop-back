@@ -5,6 +5,7 @@ import speakeasy from 'speakeasy';
 import QRCode from 'qrcode';
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
+import { createAdminNotif } from './adminNotifController.js';
 
 const COOKIE_NAME = 'customer_token';
 const JWT_EXPIRES_IN = '7d';
@@ -118,6 +119,15 @@ export const register = async (req, res) => {
     });
 
     setAuthCookie(res, token);
+
+    createAdminNotif({
+      category: 'user',
+      type: 'user_registration',
+      title: 'Новая регистрация',
+      message: `Зарегистрировался новый пользователь: ${newUser.username}`,
+      link: '/clients',
+      meta: { customerId: newUser._id, username: newUser.username }
+    });
 
     return res.status(201).json({
       message: 'Account created successfully',

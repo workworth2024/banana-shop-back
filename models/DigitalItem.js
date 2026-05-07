@@ -31,7 +31,7 @@ const digitalItemSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['available', 'sold'],
+    enum: ['available', 'sold', 'replaced', 'replacement_issued'],
     default: 'available'
   },
   orderId: {
