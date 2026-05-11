@@ -1,4 +1,5 @@
 import Service from '../models/Service.js';
+import { deleteUploadFile } from '../utils/deleteFile.js';
 
 export const getServices = async (req, res) => {
   try {
@@ -29,6 +30,7 @@ export const getServices = async (req, res) => {
     const skip = (page - 1) * limit;
     const services = await Service.find(query)
       .populate('filter_id')
+      .populate('scenarioId')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -76,6 +78,8 @@ export const createService = async (req, res) => {
     if (filterId && filterId.trim()) {
       serviceData.filter_id = filterId;
     }
+    const scenarioId = req.body.scenarioId;
+    serviceData.scenarioId = (scenarioId && scenarioId.trim()) ? scenarioId : null;
     
     const service = await Service.create(serviceData);
     res.status(201).json(service);
@@ -108,6 +112,8 @@ export const updateService = async (req, res) => {
     } else {
       updateData.filter_id = null;
     }
+    const scenarioId = req.body.scenarioId;
+    updateData.scenarioId = (scenarioId && scenarioId.trim()) ? scenarioId : null;
     
     if (req.body['title.ru'] || req.body['title.en']) {
       updateData.title = {
@@ -134,8 +140,12 @@ export const updateService = async (req, res) => {
       };
     }
     
-    if (req.file) updateData.path_image = `/uploads/${req.file.filename}`;
-    
+    if (req.file) {
+      const old = await Service.findById(id).select('path_image');
+      if (old?.path_image) deleteUploadFile(old.path_image);
+      updateData.path_image = `/uploads/${req.file.filename}`;
+    }
+
     const service = await Service.findByIdAndUpdate(id, updateData, { new: true });
     res.json(service);
   } catch (error) {
@@ -145,7 +155,8 @@ export const updateService = async (req, res) => {
 
 export const deleteService = async (req, res) => {
   try {
-    await Service.findByIdAndDelete(req.params.id);
+    const service = await Service.findByIdAndDelete(req.params.id);
+    if (service?.path_image) deleteUploadFile(service.path_image);
     res.json({ message: 'Service deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting service' });

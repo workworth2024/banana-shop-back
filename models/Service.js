@@ -65,6 +65,11 @@ const serviceSchema = new mongoose.Schema({
   implementation_period: {
     type: multilingualStringSchema,
     required: false
+  },
+  scenarioId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Scenario',
+    default: null
   }
 }, { timestamps: true });
 

@@ -16,6 +16,8 @@ import orderRoutes from './orderRoutes.js';
 import notificationRoutes from './notificationRoutes.js';
 import adminNotifRoutes from './adminNotifRoutes.js';
 import healthRoutes from './healthRoutes.js';
+import scenarioRoutes from './scenarioRoutes.js';
+import serviceOrderRoutes from './serviceOrderRoutes.js';
 
 const router = express.Router();
 
@@ -36,5 +38,7 @@ router.use('/orders', orderRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/admin-notifications', adminNotifRoutes);
 router.use('/health', healthRoutes);
+router.use('/scenarios', scenarioRoutes);
+router.use('/service-orders', serviceOrderRoutes);
 
 export default router;

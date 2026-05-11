@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 
 const multilingualStringSchema = new mongoose.Schema({
   ru: {
@@ -12,6 +13,12 @@ const multilingualStringSchema = new mongoose.Schema({
 }, { _id: false });
 
 const googleAdsProductSchema = new mongoose.Schema({
+  uid: {
+    type: String,
+    unique: true,
+    sparse: true,
+    default: () => 'GADS-' + crypto.randomBytes(4).toString('hex').toUpperCase()
+  },
   type: {
     type: String,
     enum: [

@@ -1,4 +1,5 @@
 import Manual from '../models/Manual.js';
+import { deleteUploadFile, extractImageUrls } from '../utils/deleteFile.js';
 
 export const getManuals = async (req, res) => {
   try {
@@ -118,7 +119,28 @@ export const updateManual = async (req, res) => {
       };
     }
     
-    if (req.file) updateData.path_to_file = `/uploads/manuals/${req.file.filename}`;
+    const needsOld = req.file || updateData.content;
+    if (needsOld) {
+      const old = await Manual.findById(id).select('path_to_file content');
+      if (req.file) {
+        if (old?.path_to_file) deleteUploadFile(old.path_to_file);
+        updateData.path_to_file = `/uploads/manuals/${req.file.filename}`;
+      }
+      if (updateData.content && old) {
+        const oldUrls = [
+          ...extractImageUrls(old.content?.ru || ''),
+          ...extractImageUrls(old.content?.en || ''),
+        ];
+        const newUrls = new Set([
+          ...extractImageUrls(updateData.content.ru || ''),
+          ...extractImageUrls(updateData.content.en || ''),
+        ]);
+        for (const url of oldUrls) {
+          if (!newUrls.has(url)) deleteUploadFile(url);
+        }
+      }
+    }
+
     const manual = await Manual.findByIdAndUpdate(id, updateData, { new: true });
     res.json(manual);
   } catch (error) {
@@ -128,7 +150,15 @@ export const updateManual = async (req, res) => {
 
 export const deleteManual = async (req, res) => {
   try {
-    await Manual.findByIdAndDelete(req.params.id);
+    const manual = await Manual.findByIdAndDelete(req.params.id);
+    if (manual) {
+      if (manual.path_to_file) deleteUploadFile(manual.path_to_file);
+      const imgUrls = [
+        ...extractImageUrls(manual.content?.ru || ''),
+        ...extractImageUrls(manual.content?.en || ''),
+      ];
+      for (const url of imgUrls) deleteUploadFile(url);
+    }
     res.json({ message: 'Manual deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting manual' });

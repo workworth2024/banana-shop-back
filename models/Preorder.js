@@ -1,10 +1,31 @@
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 
 const preorderSchema = new mongoose.Schema({
+  uid: {
+    type: String,
+    unique: true,
+    default: () => 'PRE-' + crypto.randomBytes(4).toString('hex').toUpperCase()
+  },
+  customerId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'CustomerUser',
+    default: null
+  },
   google_item_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'GoogleAdsProduct',
-    required: true
+    default: null
+  },
+  youtube_item_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'YoutubeProduct',
+    default: null
+  },
+  productType: {
+    type: String,
+    enum: ['google', 'youtube'],
+    default: 'google'
   },
   name: { type: String, required: true, trim: true },
   telegram: { type: String, required: true, trim: true },
@@ -12,9 +33,16 @@ const preorderSchema = new mongoose.Schema({
   comment: { type: String, default: '', trim: true },
   status: {
     type: String,
-    enum: ['pending', 'canceled', 'completed'],
+    enum: ['pending', 'in_progress', 'completed', 'cancelled'],
     default: 'pending'
-  }
+  },
+  files: [{
+    path: String,
+    originalName: String,
+    size: Number
+  }]
 }, { timestamps: true });
+
+preorderSchema.index({ customerId: 1, createdAt: -1 });
 
 export default mongoose.model('Preorder', preorderSchema);

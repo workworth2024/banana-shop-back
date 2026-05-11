@@ -154,7 +154,8 @@ export const getAllOrders = async (req, res) => {
       .limit(Number(limit))
       .select('-accessKey')
       .populate('customerId', 'username uid')
-      .populate('digitalItemIds', 'uid originalName');
+      .populate('digitalItemIds', 'uid originalName')
+      .populate('productId', 'uid');
 
     const total = await Order.countDocuments(query);
 

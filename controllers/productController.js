@@ -1,6 +1,6 @@
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
-
+import { deleteUploadFile } from '../utils/deleteFile.js';
 import mongoose from 'mongoose';
 
 // Helper for date filter
@@ -16,12 +16,13 @@ const addDateFilter = (query, startDate, endDate) => {
   }
 };
 
-// Helper to build search query (title + _id)
+// Helper to build search query (title + _id + uid)
 const buildSearchQuery = (search) => {
   const safeSearch = String(search).slice(0, 200);
   const conditions = [
     { 'title.ru': { $regex: safeSearch, $options: 'i' } },
-    { 'title.en': { $regex: safeSearch, $options: 'i' } }
+    { 'title.en': { $regex: safeSearch, $options: 'i' } },
+    { uid: { $regex: safeSearch, $options: 'i' } }
   ];
   if (mongoose.isValidObjectId(search)) {
     conditions.push({ _id: new mongoose.Types.ObjectId(search) });
@@ -120,7 +121,11 @@ export const updateYoutubeProduct = async (req, res) => {
       };
     }
     
-    if (req.file) updateData.path_image = `/uploads/${req.file.filename}`;
+    if (req.file) {
+      const old = await YoutubeProduct.findById(id).select('path_image');
+      if (old?.path_image) deleteUploadFile(old.path_image);
+      updateData.path_image = `/uploads/${req.file.filename}`;
+    }
     const product = await YoutubeProduct.findByIdAndUpdate(id, updateData, { new: true });
     res.json(product);
   } catch (error) {
@@ -130,7 +135,8 @@ export const updateYoutubeProduct = async (req, res) => {
 
 export const deleteYoutubeProduct = async (req, res) => {
   try {
-    await YoutubeProduct.findByIdAndDelete(req.params.id);
+    const product = await YoutubeProduct.findByIdAndDelete(req.params.id);
+    if (product?.path_image) deleteUploadFile(product.path_image);
     res.json({ message: 'Youtube product deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting Youtube product' });
@@ -274,7 +280,11 @@ export const updateGoogleAdsProduct = async (req, res) => {
       };
     }
     
-    if (req.file) updateData.path_image = `/uploads/${req.file.filename}`;
+    if (req.file) {
+      const old = await GoogleAdsProduct.findById(id).select('path_image');
+      if (old?.path_image) deleteUploadFile(old.path_image);
+      updateData.path_image = `/uploads/${req.file.filename}`;
+    }
     const product = await GoogleAdsProduct.findByIdAndUpdate(id, updateData, { new: true });
     res.json(product);
   } catch (error) {
@@ -284,7 +294,8 @@ export const updateGoogleAdsProduct = async (req, res) => {
 
 export const deleteGoogleAdsProduct = async (req, res) => {
   try {
-    await GoogleAdsProduct.findByIdAndDelete(req.params.id);
+    const product = await GoogleAdsProduct.findByIdAndDelete(req.params.id);
+    if (product?.path_image) deleteUploadFile(product.path_image);
     res.json({ message: 'Google Ads product deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting Google Ads product' });

@@ -8,7 +8,11 @@ import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
 import Role from './models/Role.js';
 import Currency from './models/Currency.js';
+import ReplaceRequest from './models/ReplaceRequest.js';
+import GoogleAdsProduct from './models/GoogleAdsProduct.js';
+import YoutubeProduct from './models/YoutubeProduct.js';
 import { logError } from './controllers/healthController.js';
+import { deleteUploadFile } from './utils/deleteFile.js';
 
 dotenv.config();
 
@@ -81,7 +85,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 app.use('/uploads', (req, res, next) => {
-  if (req.path.startsWith('/digital-items/')) {
+  if (req.path.startsWith('/digital-items/') || req.path.startsWith('/preorders/') || req.path.startsWith('/service-orders/')) {
     return res.status(403).json({ message: 'Forbidden' });
   }
   next();
@@ -93,6 +97,8 @@ mongoose.connect(process.env.MONGO_URI)
     console.log('Connected to MongoDB');
     await seedRoles();
     await seedCurrencies();
+    await migrateProductUids();
+    cleanOldReplacePhotos();
   })
   .catch(err => console.error('MongoDB connection error:', err));
 
@@ -121,6 +127,45 @@ async function seedCurrencies() {
     console.log('Currency USD created');
   }
 }
+
+async function migrateProductUids() {
+  try {
+    const crypto = await import('crypto');
+    const gadsNoUid = await GoogleAdsProduct.find({ uid: { $exists: false } }).select('_id');
+    for (const p of gadsNoUid) {
+      await GoogleAdsProduct.updateOne({ _id: p._id }, { $set: { uid: 'GADS-' + crypto.randomBytes(4).toString('hex').toUpperCase() } });
+    }
+    const ytNoUid = await YoutubeProduct.find({ uid: { $exists: false } }).select('_id');
+    for (const p of ytNoUid) {
+      await YoutubeProduct.updateOne({ _id: p._id }, { $set: { uid: 'YT-' + crypto.randomBytes(4).toString('hex').toUpperCase() } });
+    }
+    const total = gadsNoUid.length + ytNoUid.length;
+    if (total > 0) console.log(`[migrate] Added uid to ${gadsNoUid.length} GoogleAds + ${ytNoUid.length} YouTube products`);
+  } catch (e) {
+    console.error('[migrate] migrateProductUids error:', e.message);
+  }
+}
+
+async function cleanOldReplacePhotos() {
+  try {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const old = await ReplaceRequest.find({
+      createdAt: { $lt: cutoff },
+      'photos.0': { $exists: true }
+    }).select('photos');
+    for (const req of old) {
+      for (const photo of req.photos) deleteUploadFile(photo);
+      req.photos = [];
+      await req.save();
+    }
+    if (old.length > 0) console.log(`[cleanup] Cleared photos from ${old.length} old replace requests`);
+  } catch (e) {
+    console.error('[cleanup] cleanOldReplacePhotos error:', e.message);
+  }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+setInterval(cleanOldReplacePhotos, DAY_MS);
 
 // Routes
 import v2Routes from './routes/v2/index.js';

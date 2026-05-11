@@ -165,7 +165,7 @@ export const processReplacement = async (req, res) => {
       type: 'order_replaced',
       title: 'Товар заменён',
       message: `По заказу ${order.uid} выдана замена`,
-      link: `/profile/orders`
+      link: `/profile/orders?search=${order.uid}`
     });
 
     io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
@@ -216,7 +216,7 @@ export const processRefund = async (req, res) => {
       type: 'order_refunded',
       title: 'Возврат средств',
       message: `По заказу ${order.uid} возвращено $${order.amount.toFixed(2)}`,
-      link: `/profile/orders`
+      link: `/profile/orders?search=${order.uid}`
     });
 
     io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', {
@@ -237,10 +237,20 @@ export const processRefund = async (req, res) => {
 
 export const getReplacementsHistory = async (req, res) => {
   try {
-    const { page = 1, limit = 20, search = '' } = req.query;
+    const { page = 1, limit = 20, search = '', startDate, endDate } = req.query;
     const skip = (Number(page) - 1) * Number(limit);
 
     const matchStage = { 'replacements.0': { $exists: true } };
+
+    if (startDate || endDate) {
+      matchStage.createdAt = {};
+      if (startDate) matchStage.createdAt.$gte = new Date(startDate);
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        matchStage.createdAt.$lte = end;
+      }
+    }
 
     if (search) {
       const safe = String(search).slice(0, 100);

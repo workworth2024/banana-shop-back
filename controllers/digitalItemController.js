@@ -243,7 +243,7 @@ export const purchaseProduct = async (req, res) => {
       type: 'order_delivered',
       title: 'Товар доставлен',
       message: `Вы приобрели: ${titleStr}${qty > 1 ? ` (x${qty})` : ''}`,
-      link: `/profile/orders/${order.uid}`
+      link: `/profile/orders?search=${order.uid}`
     });
 
     io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
