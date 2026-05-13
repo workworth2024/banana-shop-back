@@ -57,7 +57,7 @@ export const updateContactFormStatus = async (req, res) => {
     if (!['Pending', 'Answered'].includes(status)) {
       return res.status(400).json({ message: 'Invalid status' });
     }
-    const form = await ContactForm.findByIdAndUpdate(id, { status }, { new: true });
+    const form = await ContactForm.findByIdAndUpdate(id, { status }, { returnDocument: 'after' });
     if (!form) return res.status(404).json({ message: 'Contact form not found' });
     res.json(form);
   } catch (error) {

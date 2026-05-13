@@ -13,6 +13,7 @@ const adminNotifSettingsSchema = new mongoose.Schema({
     user_registration: { type: Boolean, default: true },
     order_product: { type: Boolean, default: true },
     order_preorder: { type: Boolean, default: true },
+    order_service: { type: Boolean, default: true },
     order_replacement: { type: Boolean, default: true },
     support_ticket: { type: Boolean, default: true }
   }

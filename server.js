@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
+import { Readable } from 'stream';
 import { Server as SocketIO } from 'socket.io';
 import mongoose from 'mongoose';
 import cors from 'cors';
@@ -11,8 +12,14 @@ import Currency from './models/Currency.js';
 import ReplaceRequest from './models/ReplaceRequest.js';
 import GoogleAdsProduct from './models/GoogleAdsProduct.js';
 import YoutubeProduct from './models/YoutubeProduct.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { logError } from './controllers/healthController.js';
-import { deleteUploadFile } from './utils/deleteFile.js';
+import { deleteAnyFile } from './utils/deleteFile.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_ROOT = path.resolve(__dirname, 'uploads');
 
 dotenv.config();
 
@@ -84,11 +91,43 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
-app.use('/uploads', (req, res, next) => {
-  if (req.path.startsWith('/digital-items/') || req.path.startsWith('/preorders/') || req.path.startsWith('/service-orders/')) {
+const PRIVATE_PREFIXES = ['/digital-items/', '/preorders/', '/service-orders/', '/replace-requests/'];
+/** Legacy URLs only — new uploads store full CDN URLs in DB and never touch disk here */
+const PUBLIC_BUNNY_ONLY_PREFIXES = ['/products/', '/services/', '/reviews/', '/manuals/'];
+
+const servePublicFile = async (filePath, res, next) => {
+  if (PRIVATE_PREFIXES.some(p => filePath.startsWith(p))) {
     return res.status(403).json({ message: 'Forbidden' });
   }
-  next();
+  const relativeUploadPath = filePath.startsWith('/') ? filePath.slice(1) : filePath;
+  const localPath = path.join(UPLOADS_ROOT, relativeUploadPath);
+  const bunnyOnly = PUBLIC_BUNNY_ONLY_PREFIXES.some((p) => filePath.startsWith(p));
+
+  if (!bunnyOnly && fs.existsSync(localPath) && !fs.statSync(localPath).isDirectory()) {
+    return next();
+  }
+  const storagePath = filePath.startsWith('/') ? filePath : `/${filePath}`;
+  const storageUrl = `https://storage.bunnycdn.com/${process.env.BUNNY_STORAGE_ZONE}${storagePath}`;
+  try {
+    const upstream = await fetch(storageUrl, { headers: { AccessKey: process.env.BUNNY_ACCESS_KEY } });
+    if (!upstream.ok) return res.status(404).end();
+    const ct = upstream.headers.get('content-type');
+    const cl = upstream.headers.get('content-length');
+    if (ct) res.setHeader('Content-Type', ct);
+    if (cl) res.setHeader('Content-Length', cl);
+    res.setHeader('Cache-Control', 'public, max-age=2592000');
+    return Readable.fromWeb(upstream.body).pipe(res);
+  } catch {
+    return res.status(500).end();
+  }
+};
+
+app.use('/uploads', async (req, res, next) => {
+  await servePublicFile(req.path, res, next);
+}, express.static('uploads', { dotfiles: 'deny' }));
+
+app.use('/api/v3/uploads', async (req, res, next) => {
+  await servePublicFile(req.path, res, next);
 }, express.static('uploads', { dotfiles: 'deny' }));
 
 // Database connection
@@ -154,7 +193,7 @@ async function cleanOldReplacePhotos() {
       'photos.0': { $exists: true }
     }).select('photos');
     for (const req of old) {
-      for (const photo of req.photos) deleteUploadFile(photo);
+      for (const photo of req.photos) deleteAnyFile(photo);
       req.photos = [];
       await req.save();
     }

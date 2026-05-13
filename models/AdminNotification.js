@@ -9,7 +9,7 @@ const adminNotificationSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['transaction', 'user', 'order', 'preorder', 'replacement', 'support', 'order_service'],
+    enum: ['transaction', 'user', 'order', 'preorder', 'order_preorder', 'replacement', 'support', 'order_service'],
     required: true
   },
   type: {

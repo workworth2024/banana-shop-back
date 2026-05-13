@@ -1,15 +1,12 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import ServiceOrder from '../models/ServiceOrder.js';
 import Service from '../models/Service.js';
+import CustomerUser from '../models/CustomerUser.js';
+import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
-import { deleteUploadFile } from '../utils/deleteFile.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVICE_ORDERS_DIR = path.join(__dirname, '..', 'uploads', 'service-orders');
+import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -17,9 +14,9 @@ const STATUS_TITLES = {
   cancelled:   { ru: 'Услуга отменена',         en: 'Service cancelled'  }
 };
 const STATUS_MSGS = {
-  in_progress: (uid) => `Ваша заявка на услугу ${uid} взята в работу`,
-  completed:   (uid) => `Ваша заявка на услугу ${uid} выполнена`,
-  cancelled:   (uid) => `Ваша заявка на услугу ${uid} была отменена`
+  in_progress: (uid) => ({ ru: `Ваша заявка на услугу ${uid} взята в работу`, en: `Your service order ${uid} is in progress` }),
+  completed:   (uid) => ({ ru: `Ваша заявка на услугу ${uid} выполнена`, en: `Your service order ${uid} is completed` }),
+  cancelled:   (uid) => ({ ru: `Ваша заявка на услугу ${uid} была отменена`, en: `Your service order ${uid} has been cancelled` })
 };
 
 async function sendStatusNotif(order) {
@@ -29,7 +26,7 @@ async function sendStatusNotif(order) {
   const notif = await Notification.create({
     userId: order.customerId,
     type: 'service_order_status',
-    title: titles.ru,
+    title: titles,
     message: STATUS_MSGS[order.status](order.uid),
     link: `/profile/service-orders?search=${order.uid}`
   });
@@ -40,6 +37,8 @@ async function sendStatusNotif(order) {
 }
 
 export const createServiceOrder = async (req, res) => {
+  const customerId = req.customer._id;
+
   try {
     const { serviceId, responses } = req.body;
     if (!serviceId) return res.status(400).json({ message: 'serviceId required' });
@@ -47,41 +46,109 @@ export const createServiceOrder = async (req, res) => {
     const service = await Service.findById(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
 
-    const parsedResponses = typeof responses === 'string' ? JSON.parse(responses) : (responses || []);
+    const chargeAmount = parseFloat(Number(service.price) || 0);
+    if (chargeAmount <= 0) {
+      return res.status(400).json({ message: 'Стоимость услуги не задана' });
+    }
 
-    const customerFiles = (req.files || []).map(f => ({
-      path: f.path,
-      originalName: f.originalname,
-      size: f.size,
-      stepId: f.fieldname?.startsWith('step_') ? f.fieldname.replace('step_', '') : null
-    }));
+    let parsedResponses;
+    try {
+      parsedResponses = typeof responses === 'string' ? JSON.parse(responses || '[]') : (responses || []);
+      if (!Array.isArray(parsedResponses)) parsedResponses = [];
+    } catch {
+      return res.status(400).json({ message: 'Некорректный формат ответов' });
+    }
 
-    const order = await ServiceOrder.create({
-      customerId: req.customer._id,
-      serviceId,
-      scenarioId: service.scenarioId || null,
-      serviceSnapshot: {
-        title: service.title?.ru || service.title?.en || '',
-        price: service.price || 0
-      },
-      responses: parsedResponses,
-      customerFiles
-    });
+    const customer = await CustomerUser.findOneAndUpdate(
+      { _id: customerId, balance: { $gte: chargeAmount } },
+      { $inc: { balance: -chargeAmount } },
+      { returnDocument: 'after' }
+    );
 
-    const serviceTitle = service.title?.ru || service.title?.en || String(serviceId);
-    createAdminNotif({
-      category: 'order_service',
-      type: 'order_service',
-      title: 'Новая заявка на услугу',
-      message: `Новая заявка на «${serviceTitle}» — ${order.uid}`,
-      link: `/service-orders`,
-      meta: { orderId: order._id, uid: order.uid }
-    });
+    if (!customer) {
+      return res.status(400).json({ message: 'Недостаточно средств на балансе' });
+    }
 
-    return res.status(201).json(order);
+    const customerFiles = [];
+    let persistedOrderId = null;
+    try {
+      for (const f of (req.files || [])) {
+        const filename = generateFilename(f.originalname);
+        const remotePath = `/service-orders/${filename}`;
+        await bunnyUpload(remotePath, f.buffer, f.mimetype);
+        customerFiles.push({
+          path: remotePath,
+          originalName: f.originalname,
+          size: f.size,
+          stepId: f.fieldname?.startsWith('step_') ? f.fieldname.replace('step_', '') : null
+        });
+      }
+
+      const serviceTitle = service.title?.ru || service.title?.en || String(serviceId);
+
+      const order = await ServiceOrder.create({
+        customerId,
+        serviceId,
+        scenarioId: service.scenarioId || null,
+        serviceSnapshot: {
+          title: serviceTitle,
+          price: chargeAmount
+        },
+        amountPaid: chargeAmount,
+        currency: 'USD',
+        paymentMethod: 'balance',
+        paymentStatus: 'paid',
+        responses: parsedResponses,
+        customerFiles
+      });
+      persistedOrderId = order._id;
+
+      let paymentTransactionUid = '';
+      try {
+        const txDoc = await Transaction.create({
+          userId: customerId,
+          type: 'service_order',
+          status: 'success',
+          amount: -chargeAmount,
+          currency: 'USD',
+          note: `Service ${order.uid}`
+        });
+        paymentTransactionUid = txDoc.uid;
+        await ServiceOrder.updateOne({ _id: order._id }, { paymentTransactionUid: txDoc.uid });
+      } catch (txErr) {
+        await ServiceOrder.findByIdAndDelete(order._id).catch(() => {});
+        persistedOrderId = null;
+        throw txErr;
+      }
+
+      io.of('/customer').to(`customer:${String(customerId)}`).emit('balance_updated', {
+        balance: customer.balance
+      });
+
+      createAdminNotif({
+        category: 'order_service',
+        type: 'order_service',
+        title: 'Новая заявка на услугу',
+        message: `Оплачена заявка «${serviceTitle}» — ${order.uid} — $${chargeAmount.toFixed(2)}`,
+        link: `/service-orders?search=${encodeURIComponent(order.uid)}`,
+        meta: { orderId: order._id, uid: order.uid, amount: chargeAmount }
+      });
+
+      return res.status(201).json({
+        ...order.toObject(),
+        paymentTransactionUid
+      });
+    } catch (err) {
+      for (const cf of customerFiles) {
+        if (cf.path) deleteAnyFile(cf.path);
+      }
+      if (persistedOrderId) await ServiceOrder.findByIdAndDelete(persistedOrderId).catch(() => {});
+      await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: chargeAmount } }).catch(() => {});
+      console.error('[ServiceOrder] createServiceOrder error:', err);
+      return res.status(500).json({ message: err.message || 'Server error' });
+    }
   } catch (err) {
-    console.error('[ServiceOrder] createServiceOrder error:', err);
-    if (req.files) req.files.forEach(f => fs.existsSync(f.path) && fs.unlinkSync(f.path));
+    console.error('[ServiceOrder] createServiceOrder outer error:', err);
     return res.status(500).json({ message: err.message || 'Server error' });
   }
 };
@@ -131,11 +198,18 @@ export const downloadResultFile = async (req, res) => {
     const file = order.resultFiles.id(req.params.fileId);
     if (!file) return res.status(404).json({ message: 'File not found' });
 
-    if (!fs.existsSync(file.path)) return res.status(404).json({ message: 'File not found on disk' });
-
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
-    fs.createReadStream(file.path).pipe(res);
+    if (file.size) res.setHeader('Content-Length', file.size);
+
+    if (isBunnyPath(file.path)) {
+      const { stream } = await bunnyDownload(file.path);
+      return stream.pipe(res);
+    }
+
+    const fs = await import('fs');
+    if (!fs.existsSync(file.path)) return res.status(404).json({ message: 'File not found on disk' });
+    return fs.createReadStream(file.path).pipe(res);
   } catch (err) {
     console.error('[ServiceOrder] downloadResultFile error:', err);
     if (!res.headersSent) return res.status(500).json({ message: 'Server error' });
@@ -188,7 +262,7 @@ export const updateServiceOrderStatus = async (req, res) => {
     const order = await ServiceOrder.findByIdAndUpdate(
       req.params.id,
       { status, ...(adminComment !== undefined && { adminComment }) },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
@@ -202,21 +276,21 @@ export const updateServiceOrderStatus = async (req, res) => {
 export const uploadResultFiles = async (req, res) => {
   try {
     const order = await ServiceOrder.findById(req.params.id);
-    if (!order) {
-      if (req.files) req.files.forEach(f => fs.existsSync(f.path) && fs.unlinkSync(f.path));
-      return res.status(404).json({ message: 'Order not found' });
+    if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    const newFiles = [];
+    for (const f of (req.files || [])) {
+      const filename = generateFilename(f.originalname);
+      const remotePath = `/service-orders/${filename}`;
+      await bunnyUpload(remotePath, f.buffer, f.mimetype);
+      newFiles.push({ path: remotePath, originalName: f.originalname, size: f.size });
     }
-    const newFiles = (req.files || []).map(f => ({
-      path: f.path,
-      originalName: f.originalname,
-      size: f.size
-    }));
+
     order.resultFiles.push(...newFiles);
     await order.save();
     return res.json({ resultFiles: order.resultFiles.map(f => ({ _id: f._id, originalName: f.originalName, size: f.size })) });
   } catch (err) {
     console.error('[ServiceOrder] uploadResultFiles error:', err);
-    if (req.files) req.files.forEach(f => fs.existsSync(f.path) && fs.unlinkSync(f.path));
     return res.status(500).json({ message: 'Server error' });
   }
 };
@@ -227,10 +301,19 @@ export const downloadCustomerFile = async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const file = order.customerFiles.id(req.params.fileId);
     if (!file) return res.status(404).json({ message: 'File not found' });
-    if (!fs.existsSync(file.path)) return res.status(404).json({ message: 'File not found on disk' });
+
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.originalName)}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
-    fs.createReadStream(file.path).pipe(res);
+    if (file.size) res.setHeader('Content-Length', file.size);
+
+    if (isBunnyPath(file.path)) {
+      const { stream } = await bunnyDownload(file.path);
+      return stream.pipe(res);
+    }
+
+    const fs = await import('fs');
+    if (!fs.existsSync(file.path)) return res.status(404).json({ message: 'File not found on disk' });
+    return fs.createReadStream(file.path).pipe(res);
   } catch (err) {
     console.error('[ServiceOrder] downloadCustomerFile error:', err);
     if (!res.headersSent) return res.status(500).json({ message: 'Server error' });
@@ -243,7 +326,7 @@ export const deleteResultFile = async (req, res) => {
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const file = order.resultFiles.id(req.params.fileId);
     if (!file) return res.status(404).json({ message: 'File not found' });
-    deleteUploadFile(file.path);
+    deleteAnyFile(file.path);
     order.resultFiles.pull(req.params.fileId);
     await order.save();
     return res.json({ ok: true });

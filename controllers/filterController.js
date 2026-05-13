@@ -38,7 +38,7 @@ export const updateFilter = async (req, res) => {
       };
     }
     
-    const filter = await Filter.findByIdAndUpdate(id, updateData, { new: true });
+    const filter = await Filter.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
     res.json(filter);
   } catch (error) {
     console.error(error);

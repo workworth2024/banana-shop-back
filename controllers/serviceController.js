@@ -1,11 +1,24 @@
 import Service from '../models/Service.js';
-import { deleteUploadFile } from '../utils/deleteFile.js';
+import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
+
+const deleteServiceImage = (path_image) => {
+  if (!path_image) return;
+  deleteAnyFile(path_image);
+};
+
+const uploadServiceImage = async (file) => {
+  const filename = generateFilename(file.originalname);
+  const remotePath = `/services/${filename}`;
+  await bunnyUpload(remotePath, file.buffer, file.mimetype);
+  return getBunnyPublicUrl(remotePath);
+};
 
 export const getServices = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter, startDate, endDate } = req.query;
     const query = {};
-    
+
     if (search) {
       query.$or = [
         { 'title.ru': { $regex: search, $options: 'i' } },
@@ -14,7 +27,7 @@ export const getServices = async (req, res) => {
         { 'sub_title.en': { $regex: search, $options: 'i' } }
       ];
     }
-    
+
     if (filter) query.filter_id = filter;
 
     if (startDate || endDate) {
@@ -34,9 +47,8 @@ export const getServices = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
-    
-    const total = await Service.countDocuments(query);
 
+    const total = await Service.countDocuments(query);
     res.json({ services, total, pages: Math.ceil(total / limit) });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching services' });
@@ -46,41 +58,22 @@ export const getServices = async (req, res) => {
 export const createService = async (req, res) => {
   try {
     const { price } = req.body;
-    const title = {
-      ru: req.body['title.ru'] || '',
-      en: req.body['title.en'] || ''
-    };
-    const sub_title = {
-      ru: req.body['sub_title.ru'] || '',
-      en: req.body['sub_title.en'] || ''
-    };
-    const desc = {
-      ru: req.body['desc.ru'] || '',
-      en: req.body['desc.en'] || ''
-    };
-    const sub_desc = {
-      ru: req.body['sub_desc.ru'] || '',
-      en: req.body['sub_desc.en'] || ''
-    };
-    const path_image = req.file ? `/uploads/${req.file.filename}` : '';
+    const title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
+    const sub_title = { ru: req.body['sub_title.ru'] || '', en: req.body['sub_title.en'] || '' };
+    const desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
+    const sub_desc = { ru: req.body['sub_desc.ru'] || '', en: req.body['sub_desc.en'] || '' };
     const link = req.body.link || '';
-    const necessary_data = {
-      ru: req.body['necessary_data.ru'] || '',
-      en: req.body['necessary_data.en'] || ''
-    };
-    const implementation_period = {
-      ru: req.body['implementation_period.ru'] || '',
-      en: req.body['implementation_period.en'] || ''
-    };
-    
+    const necessary_data = { ru: req.body['necessary_data.ru'] || '', en: req.body['necessary_data.en'] || '' };
+    const implementation_period = { ru: req.body['implementation_period.ru'] || '', en: req.body['implementation_period.en'] || '' };
+
+    const path_image = req.file ? await uploadServiceImage(req.file) : '';
+
     const serviceData = { title, sub_title, desc, sub_desc, price, path_image, link, necessary_data, implementation_period };
     const filterId = req.body.filter_id;
-    if (filterId && filterId.trim()) {
-      serviceData.filter_id = filterId;
-    }
+    if (filterId && filterId.trim()) serviceData.filter_id = filterId;
     const scenarioId = req.body.scenarioId;
     serviceData.scenarioId = (scenarioId && scenarioId.trim()) ? scenarioId : null;
-    
+
     const service = await Service.create(serviceData);
     res.status(201).json(service);
   } catch (error) {
@@ -96,57 +89,35 @@ export const updateService = async (req, res) => {
     const updateData = {
       price,
       link: req.body.link || '',
-      necessary_data: {
-        ru: req.body['necessary_data.ru'] || '',
-        en: req.body['necessary_data.en'] || ''
-      },
-      implementation_period: {
-        ru: req.body['implementation_period.ru'] || '',
-        en: req.body['implementation_period.en'] || ''
-      }
+      necessary_data: { ru: req.body['necessary_data.ru'] || '', en: req.body['necessary_data.en'] || '' },
+      implementation_period: { ru: req.body['implementation_period.ru'] || '', en: req.body['implementation_period.en'] || '' }
     };
-    
+
     const filterId = req.body.filter_id;
-    if (filterId && filterId.trim()) {
-      updateData.filter_id = filterId;
-    } else {
-      updateData.filter_id = null;
-    }
+    updateData.filter_id = (filterId && filterId.trim()) ? filterId : null;
     const scenarioId = req.body.scenarioId;
     updateData.scenarioId = (scenarioId && scenarioId.trim()) ? scenarioId : null;
-    
+
     if (req.body['title.ru'] || req.body['title.en']) {
-      updateData.title = {
-        ru: req.body['title.ru'] || '',
-        en: req.body['title.en'] || ''
-      };
+      updateData.title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
     }
     if (req.body['sub_title.ru'] || req.body['sub_title.en']) {
-      updateData.sub_title = {
-        ru: req.body['sub_title.ru'] || '',
-        en: req.body['sub_title.en'] || ''
-      };
+      updateData.sub_title = { ru: req.body['sub_title.ru'] || '', en: req.body['sub_title.en'] || '' };
     }
     if (req.body['desc.ru'] || req.body['desc.en']) {
-      updateData.desc = {
-        ru: req.body['desc.ru'] || '',
-        en: req.body['desc.en'] || ''
-      };
+      updateData.desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     }
     if (req.body['sub_desc.ru'] || req.body['sub_desc.en']) {
-      updateData.sub_desc = {
-        ru: req.body['sub_desc.ru'] || '',
-        en: req.body['sub_desc.en'] || ''
-      };
-    }
-    
-    if (req.file) {
-      const old = await Service.findById(id).select('path_image');
-      if (old?.path_image) deleteUploadFile(old.path_image);
-      updateData.path_image = `/uploads/${req.file.filename}`;
+      updateData.sub_desc = { ru: req.body['sub_desc.ru'] || '', en: req.body['sub_desc.en'] || '' };
     }
 
-    const service = await Service.findByIdAndUpdate(id, updateData, { new: true });
+    if (req.file) {
+      const old = await Service.findById(id).select('path_image');
+      deleteServiceImage(old?.path_image);
+      updateData.path_image = await uploadServiceImage(req.file);
+    }
+
+    const service = await Service.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
     res.json(service);
   } catch (error) {
     res.status(500).json({ message: 'Error updating service' });
@@ -156,7 +127,7 @@ export const updateService = async (req, res) => {
 export const deleteService = async (req, res) => {
   try {
     const service = await Service.findByIdAndDelete(req.params.id);
-    if (service?.path_image) deleteUploadFile(service.path_image);
+    deleteServiceImage(service?.path_image);
     res.json({ message: 'Service deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting service' });

@@ -1,5 +1,7 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import {
+  createPreorder,
   getPreorders, updatePreorderStatus, deletePreorder,
   uploadPreorderFiles, deletePreorderFile,
   getMyPreorders, downloadMyPreorderFile
@@ -16,8 +18,18 @@ const canManage = (req, res, next) => {
   return res.status(403).json({ message: 'Access denied' });
 };
 
+const preorderCreateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { message: 'Too many preorder requests. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 router.get('/my', verifyCustomer, getMyPreorders);
 router.get('/my/:uid/download/:fileId', verifyCustomer, downloadMyPreorderFile);
+
+router.post('/', verifyCustomer, preorderCreateLimiter, createPreorder);
 
 router.get('/', verifyToken, canManage, getPreorders);
 router.put('/:id/status', verifyToken, canManage, updatePreorderStatus);

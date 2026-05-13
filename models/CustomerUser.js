@@ -65,6 +65,11 @@ const customerUserSchema = new mongoose.Schema({
   lastSeen: {
     type: Date,
     default: null
+  },
+  language: {
+    type: String,
+    enum: ['ru', 'en'],
+    default: 'en'
   }
 }, { timestamps: true });
 

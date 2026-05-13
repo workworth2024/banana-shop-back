@@ -35,7 +35,8 @@ const safeUser = (user) => ({
   telegramLinked: !!user.telegramId,
   balance: user.balance,
   referralCode: user.referralCode,
-  twoFAEnabled: user.twoFAEnabled
+  twoFAEnabled: user.twoFAEnabled,
+  language: user.language || 'en'
 });
 
 const verifyTelegramData = (data) => {
@@ -125,8 +126,8 @@ export const register = async (req, res) => {
       type: 'user_registration',
       title: 'Новая регистрация',
       message: `Зарегистрировался новый пользователь: ${newUser.username}`,
-      link: '/clients',
-      meta: { customerId: newUser._id, username: newUser.username }
+      link: `/clients?search=${encodeURIComponent(newUser.uid)}`,
+      meta: { customerId: newUser._id, username: newUser.username, uid: newUser.uid }
     });
 
     return res.status(201).json({
@@ -339,7 +340,7 @@ export const disable2FA = async (req, res) => {
 
 export const updateProfile = async (req, res) => {
   try {
-    const { username, email, telegramUsername, currentPassword, newPassword } = req.body;
+    const { username, email, telegramUsername, currentPassword, newPassword, language } = req.body;
     const user = req.customer;
 
     if (username !== undefined) {
@@ -367,6 +368,10 @@ export const updateProfile = async (req, res) => {
 
     if (telegramUsername !== undefined) {
       user.telegramUsername = telegramUsername?.trim() || null;
+    }
+
+    if (language !== undefined && ['ru', 'en'].includes(language)) {
+      user.language = language;
     }
 
     if (newPassword) {

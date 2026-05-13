@@ -1,6 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import Order from '../models/Order.js';
 import DigitalItem from '../models/DigitalItem.js';
 import ReplaceRequest from '../models/ReplaceRequest.js';
@@ -9,13 +6,19 @@ import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
+import path from 'path';
+import {
+  bunnyUpload,
+  bunnyDownload,
+  generateFilename,
+  getBunnyPublicUrl,
+  isBunnyPath,
+  isBunnyCdnUrl
+} from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
-
-const getImageUrl = (filePath) => {
-  const rel = path.relative(UPLOADS_ROOT, filePath).replace(/\\/g, '/');
-  return `/uploads/${rel}`;
+const deleteReplacePhoto = (photo) => {
+  deleteAnyFile(photo);
 };
 
 export const submitReplaceRequest = async (req, res) => {
@@ -40,7 +43,19 @@ export const submitReplaceRequest = async (req, res) => {
       return res.status(400).json({ message: 'Заявка на замену уже подана' });
     }
 
-    const photos = (req.files || []).map(f => getImageUrl(f.path));
+    const photos = [];
+    const cdnBase = (process.env.BUNNY_CDN_URL || '').replace(/\/$/, '');
+    for (const file of (req.files || [])) {
+      const filename = generateFilename(file.originalname);
+      const remotePath = `/replacement-proofs/${filename}`;
+      await bunnyUpload(remotePath, file.buffer, file.mimetype);
+      const publicUrl = getBunnyPublicUrl(remotePath);
+      if (!cdnBase || !/^https?:\/\//i.test(publicUrl)) {
+        console.error('[Replace] BUNNY_CDN_URL не задан — не могу сохранить публичную ссылку на фото');
+        return res.status(500).json({ message: 'Конфигурация CDN не настроена' });
+      }
+      photos.push(publicUrl);
+    }
 
     await ReplaceRequest.create({
       orderId: order._id,
@@ -57,14 +72,61 @@ export const submitReplaceRequest = async (req, res) => {
       type: 'replace_request',
       title: 'Запрос на замену',
       message: `Заявка на замену по заказу ${order.uid}`,
-      link: '/orders',
-      meta: { orderId: order._id }
+      link: `/orders?search=${encodeURIComponent(order.uid)}`,
+      meta: { orderId: order._id, orderUid: order.uid }
     });
 
     return res.status(201).json({ message: 'Заявка отправлена' });
   } catch (error) {
     console.error('[Replace] submitReplaceRequest error:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const downloadReplaceRequestPhoto = async (req, res) => {
+  try {
+    const orderId = req.params.id;
+    const idx = parseInt(req.params.photoIndex, 10);
+    if (Number.isNaN(idx) || idx < 0) {
+      return res.status(400).json({ message: 'Некорректный индекс фото' });
+    }
+
+    const request = await ReplaceRequest.findOne({ orderId }).lean();
+    if (!request?.photos?.length || idx >= request.photos.length) {
+      return res.status(404).json({ message: 'Фото не найдено' });
+    }
+
+    const photoRef = request.photos[idx];
+    if (!photoRef) {
+      return res.status(404).json({ message: 'Фото не найдено' });
+    }
+
+    const s = String(photoRef);
+    if (/^https?:\/\//i.test(s) || isBunnyCdnUrl(s)) {
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      return res.redirect(302, s);
+    }
+
+    if (!s.startsWith('/replace-requests/')) {
+      return res.status(404).json({ message: 'Фото не найдено' });
+    }
+
+    const ext = path.extname(s).toLowerCase();
+    const mime =
+      ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+
+    if (isBunnyPath(s)) {
+      const { stream, length } = await bunnyDownload(s);
+      if (length) res.setHeader('Content-Length', String(length));
+      return stream.pipe(res);
+    }
+
+    return res.status(404).json({ message: 'Файл недоступен' });
+  } catch (error) {
+    console.error('[Replace] downloadReplaceRequestPhoto error:', error);
+    if (!res.headersSent) return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -130,8 +192,7 @@ export const processReplacement = async (req, res) => {
       return res.status(400).json({ message: 'Товар не принадлежит этому продукту' });
     }
 
-    const lastItemId = order.digitalItemIds?.[order.digitalItemIds.length - 1]?._id
-      || order.digitalItemId;
+    const lastItemId = order.digitalItemIds?.[order.digitalItemIds.length - 1]?._id || order.digitalItemId;
 
     if (lastItemId) {
       await DigitalItem.findByIdAndUpdate(lastItemId, { $set: { status: 'replaced' } });
@@ -163,8 +224,11 @@ export const processReplacement = async (req, res) => {
     const notif = await Notification.create({
       userId: order.customerId,
       type: 'order_replaced',
-      title: 'Товар заменён',
-      message: `По заказу ${order.uid} выдана замена`,
+      title: { ru: 'Товар заменён', en: 'Product replaced' },
+      message: {
+        ru: `По заказу ${order.uid} выдана замена`,
+        en: `Order ${order.uid} has been replaced`
+      },
       link: `/profile/orders?search=${order.uid}`
     });
 
@@ -182,8 +246,6 @@ export const processReplacement = async (req, res) => {
 
 export const processRefund = async (req, res) => {
   try {
-    const adminId = req.user._id;
-
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Заказ не найден' });
 
@@ -194,7 +256,7 @@ export const processRefund = async (req, res) => {
     const customer = await CustomerUser.findByIdAndUpdate(
       order.customerId,
       { $inc: { balance: order.amount } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!customer) return res.status(404).json({ message: 'Покупатель не найден' });
@@ -214,15 +276,15 @@ export const processRefund = async (req, res) => {
     const notif = await Notification.create({
       userId: order.customerId,
       type: 'order_refunded',
-      title: 'Возврат средств',
-      message: `По заказу ${order.uid} возвращено $${order.amount.toFixed(2)}`,
+      title: { ru: 'Возврат средств', en: 'Refund issued' },
+      message: {
+        ru: `По заказу ${order.uid} возвращено $${order.amount.toFixed(2)}`,
+        en: `Order ${order.uid} refunded $${order.amount.toFixed(2)}`
+      },
       link: `/profile/orders?search=${order.uid}`
     });
 
-    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', {
-      balance: customer.balance
-    });
-
+    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
     io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
       id: notif._id, type: notif.type, title: notif.title,
       message: notif.message, link: notif.link, createdAt: notif.createdAt
@@ -292,3 +354,5 @@ export const getReplacementsHistory = async (req, res) => {
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+export { deleteReplacePhoto };

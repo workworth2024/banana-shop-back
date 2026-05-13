@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
 import {
@@ -18,24 +19,47 @@ const canManageDigital = (req, res, next) => {
   return res.status(403).json({ message: 'Access denied' });
 };
 
-// Admin: upload files for a product
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { message: 'Too many upload requests. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const adminDownloadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { message: 'Too many download requests. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const purchaseLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { message: 'Too many purchase requests. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 router.post(
   '/admin/:productType/:productId',
   verifyToken,
   canManageDigital,
+  uploadLimiter,
   uploadDigital.array('files', 100),
   uploadDigitalItems
 );
 
-// Admin: download a specific item by uid (must come BEFORE :productType/:productId)
 router.get(
   '/admin/download/:uid',
   verifyToken,
   canManageDigital,
+  adminDownloadLimiter,
   downloadDigitalItem
 );
 
-// Admin: list digital items for a product
 router.get(
   '/admin/:productType/:productId',
   verifyToken,
@@ -43,7 +67,6 @@ router.get(
   getDigitalItems
 );
 
-// Admin: delete an item by _id
 router.delete(
   '/admin/:id',
   verifyToken,
@@ -51,10 +74,10 @@ router.delete(
   deleteDigitalItem
 );
 
-// Customer: purchase a product (deducts balance, assigns digital item)
 router.post(
   '/purchase',
   verifyCustomer,
+  purchaseLimiter,
   purchaseProduct
 );
 

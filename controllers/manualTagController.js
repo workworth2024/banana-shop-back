@@ -32,7 +32,7 @@ export const updateManualTag = async (req, res) => {
     if (nameRu || nameEn) {
       updateData.name = { ru: nameRu || '', en: nameEn || '' };
     }
-    const tag = await ManualTag.findByIdAndUpdate(id, updateData, { new: true });
+    const tag = await ManualTag.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
     res.json(tag);
   } catch (error) {
     console.error(error);

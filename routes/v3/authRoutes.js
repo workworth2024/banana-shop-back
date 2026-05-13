@@ -1,7 +1,11 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { login, register, logout, checkAuth } from '../../controllers/authController.js';
-import { verifyToken, isAdmin } from '../../middlewares/authMiddleware.js';
+import {
+  login, register, logout, checkAuth,
+  verifyLogin2FA, getSessions, terminateOtherSessions,
+  setup2FA, enable2FA, disable2FA
+} from '../../controllers/authController.js';
+import { verifyToken } from '../../middlewares/authMiddleware.js';
 
 const router = express.Router();
 
@@ -13,16 +17,18 @@ const loginLimiter = rateLimit({
   legacyHeaders: false
 });
 
-// Public auth routes
 router.post('/register', register);
 router.post('/login', loginLimiter, login);
+router.post('/2fa/verify-login', loginLimiter, verifyLogin2FA);
 router.post('/logout', logout);
 
-// Protected auth check
 router.get('/me', verifyToken, checkAuth);
 
-// Admin-only: manage users
-// router.get('/users/pending', verifyToken, isAdmin, getPendingUsers);
-// router.put('/users/:id/approve', verifyToken, isAdmin, approveUser);
+router.get('/sessions', verifyToken, getSessions);
+router.delete('/sessions/others', verifyToken, terminateOtherSessions);
+
+router.post('/2fa/setup', verifyToken, setup2FA);
+router.post('/2fa/enable', verifyToken, enable2FA);
+router.post('/2fa/disable', verifyToken, disable2FA);
 
 export default router;

@@ -1,12 +1,25 @@
 import Manual from '../models/Manual.js';
-import { deleteUploadFile, extractImageUrls } from '../utils/deleteFile.js';
+import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
+import { deleteAnyFile, extractImageUrls } from '../utils/deleteFile.js';
+
+const deleteManualFile = (urlOrPath) => {
+  if (!urlOrPath) return;
+  deleteAnyFile(urlOrPath);
+};
+
+const uploadManualFile = async (file) => {
+  const filename = generateFilename(file.originalname);
+  const remotePath = `/manuals/${filename}`;
+  await bunnyUpload(remotePath, file.buffer, file.mimetype);
+  return getBunnyPublicUrl(remotePath);
+};
 
 export const getManuals = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter, tag, startDate, endDate } = req.query;
     const safeSearch = String(search).slice(0, 200);
     const query = {};
-    
+
     if (safeSearch) {
       query.$or = [
         { 'title.ru': { $regex: safeSearch, $options: 'i' } },
@@ -15,7 +28,7 @@ export const getManuals = async (req, res) => {
         { 'desc.en': { $regex: safeSearch, $options: 'i' } }
       ];
     }
-    
+
     if (filter) query.filter_id = filter;
     if (tag) query.tag_id = tag;
 
@@ -36,9 +49,8 @@ export const getManuals = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
-    
-    const total = await Manual.countDocuments(query);
 
+    const total = await Manual.countDocuments(query);
     res.json({ manuals, total, pages: Math.ceil(total / limit) });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching manuals' });
@@ -48,30 +60,18 @@ export const getManuals = async (req, res) => {
 export const createManual = async (req, res) => {
   try {
     const { link } = req.body;
-    const title = {
-      ru: req.body['title.ru'] || '',
-      en: req.body['title.en'] || ''
-    };
-    const desc = {
-      ru: req.body['desc.ru'] || '',
-      en: req.body['desc.en'] || ''
-    };
-    const content = {
-      ru: req.body['content.ru'] || '',
-      en: req.body['content.en'] || ''
-    };
-    const path_to_file = req.file ? `/uploads/manuals/${req.file.filename}` : '';
-    
+    const title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
+    const desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
+    const content = { ru: req.body['content.ru'] || '', en: req.body['content.en'] || '' };
+
+    const path_to_file = req.file ? await uploadManualFile(req.file) : '';
+
     const manualData = { title, desc, link, content, path_to_file };
     const filterId = req.body.filter_id;
-    if (filterId && filterId.trim()) {
-      manualData.filter_id = filterId;
-    }
+    if (filterId && filterId.trim()) manualData.filter_id = filterId;
     const tagId = req.body.tag_id;
-    if (tagId && tagId.trim()) {
-      manualData.tag_id = tagId;
-    }
-    
+    if (tagId && tagId.trim()) manualData.tag_id = tagId;
+
     const manual = await Manual.create(manualData);
     res.status(201).json(manual);
   } catch (error) {
@@ -85,63 +85,49 @@ export const updateManual = async (req, res) => {
     const { id } = req.params;
     const { link } = req.body;
     const updateData = { link };
-    
+
     if (req.body['content.ru'] !== undefined || req.body['content.en'] !== undefined) {
       updateData.content = {
         ru: req.body['content.ru'] || '',
         en: req.body['content.en'] || ''
       };
     }
-    
+
     const filterId = req.body.filter_id;
-    if (filterId && filterId.trim()) {
-      updateData.filter_id = filterId;
-    } else {
-      updateData.filter_id = null;
-    }
+    updateData.filter_id = (filterId && filterId.trim()) ? filterId : null;
     const tagId = req.body.tag_id;
-    if (tagId && tagId.trim()) {
-      updateData.tag_id = tagId;
-    } else {
-      updateData.tag_id = null;
-    }
-    
+    updateData.tag_id = (tagId && tagId.trim()) ? tagId : null;
+
     if (req.body['title.ru'] || req.body['title.en']) {
-      updateData.title = {
-        ru: req.body['title.ru'] || '',
-        en: req.body['title.en'] || ''
-      };
+      updateData.title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
     }
     if (req.body['desc.ru'] || req.body['desc.en']) {
-      updateData.desc = {
-        ru: req.body['desc.ru'] || '',
-        en: req.body['desc.en'] || ''
-      };
+      updateData.desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     }
-    
+
     const needsOld = req.file || updateData.content;
     if (needsOld) {
       const old = await Manual.findById(id).select('path_to_file content');
       if (req.file) {
-        if (old?.path_to_file) deleteUploadFile(old.path_to_file);
-        updateData.path_to_file = `/uploads/manuals/${req.file.filename}`;
+        deleteManualFile(old?.path_to_file);
+        updateData.path_to_file = await uploadManualFile(req.file);
       }
       if (updateData.content && old) {
         const oldUrls = [
           ...extractImageUrls(old.content?.ru || ''),
-          ...extractImageUrls(old.content?.en || ''),
+          ...extractImageUrls(old.content?.en || '')
         ];
         const newUrls = new Set([
           ...extractImageUrls(updateData.content.ru || ''),
-          ...extractImageUrls(updateData.content.en || ''),
+          ...extractImageUrls(updateData.content.en || '')
         ]);
         for (const url of oldUrls) {
-          if (!newUrls.has(url)) deleteUploadFile(url);
+          if (!newUrls.has(url)) deleteManualFile(url);
         }
       }
     }
 
-    const manual = await Manual.findByIdAndUpdate(id, updateData, { new: true });
+    const manual = await Manual.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
     res.json(manual);
   } catch (error) {
     res.status(500).json({ message: 'Error updating manual' });
@@ -152,12 +138,12 @@ export const deleteManual = async (req, res) => {
   try {
     const manual = await Manual.findByIdAndDelete(req.params.id);
     if (manual) {
-      if (manual.path_to_file) deleteUploadFile(manual.path_to_file);
+      deleteManualFile(manual.path_to_file);
       const imgUrls = [
         ...extractImageUrls(manual.content?.ru || ''),
-        ...extractImageUrls(manual.content?.en || ''),
+        ...extractImageUrls(manual.content?.en || '')
       ];
-      for (const url of imgUrls) deleteUploadFile(url);
+      for (const url of imgUrls) deleteManualFile(url);
     }
     res.json({ message: 'Manual deleted' });
   } catch (error) {
@@ -178,7 +164,7 @@ export const getManualById = async (req, res) => {
 export const uploadManualImage = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'No image uploaded' });
-    const url = `/uploads/manuals/${req.file.filename}`;
+    const url = await uploadManualFile(req.file);
     res.json({ url });
   } catch (error) {
     res.status(500).json({ message: 'Error uploading image' });

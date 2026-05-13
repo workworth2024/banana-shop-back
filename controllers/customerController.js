@@ -113,7 +113,7 @@ export const adjustBalance = async (req, res) => {
     customer.balance = newBalance;
     await customer.save();
 
-    await Transaction.create({
+    const txDoc = await Transaction.create({
       userId: customer._id,
       type: parsed >= 0 ? 'deposit_admin' : 'withdraw_admin',
       status: 'success',
@@ -131,10 +131,18 @@ export const adjustBalance = async (req, res) => {
       const notif = await Notification.create({
         userId: customer._id,
         type: 'balance_updated',
-        title: isDeposit ? 'Баланс пополнен' : 'Списание с баланса',
+        title: isDeposit
+          ? { ru: 'Баланс пополнен', en: 'Balance topped up' }
+          : { ru: 'Списание с баланса', en: 'Balance deducted' },
         message: isDeposit
-          ? `На ваш баланс зачислено $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`
-          : `С вашего баланса списано $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`,
+          ? {
+              ru: `На ваш баланс зачислено $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`,
+              en: `$${Math.abs(parsed).toFixed(2)} has been added to your balance${note ? '. ' + note : ''}`
+            }
+          : {
+              ru: `С вашего баланса списано $${Math.abs(parsed).toFixed(2)}${note ? '. ' + note : ''}`,
+              en: `$${Math.abs(parsed).toFixed(2)} has been deducted from your balance${note ? '. ' + note : ''}`
+            },
         link: '/profile/wallet'
       });
       io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
@@ -149,8 +157,8 @@ export const adjustBalance = async (req, res) => {
       type: isDeposit ? 'transaction_deposit' : 'transaction_payment',
       title: isDeposit ? 'Пополнение баланса' : 'Списание с баланса',
       message: `${customer.username}: ${isDeposit ? '+' : ''}$${parsed.toFixed(2)}${note ? ' — ' + note : ''}`,
-      link: '/transactions',
-      meta: { customerId: customer._id, amount: parsed }
+      link: `/transactions?search=${encodeURIComponent(txDoc.uid)}`,
+      meta: { customerId: customer._id, amount: parsed, transactionUid: txDoc.uid }
     });
 
     return res.status(200).json({
@@ -213,7 +221,10 @@ export const getAdminTransactions = async (req, res) => {
       if (matchingCustomers.length) {
         query.userId = { $in: matchingCustomers.map(c => c._id) };
       } else {
-        query.uid = { $regex: safe, $options: 'i' };
+        query.$or = [
+          { uid: { $regex: safe, $options: 'i' } },
+          { note: { $regex: safe, $options: 'i' } }
+        ];
       }
     }
 

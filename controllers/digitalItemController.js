@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import mongoose from 'mongoose';
 import DigitalItem from '../models/DigitalItem.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
@@ -11,8 +11,7 @@ import Transaction from '../models/Transaction.js';
 import CustomerUser from '../models/CustomerUser.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { bunnyUpload, bunnyDelete, bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -46,22 +45,61 @@ export const uploadDigitalItems = async (req, res) => {
       return res.status(400).json({ message: 'No files uploaded' });
     }
 
-    const items = req.files.map(file => ({
-      productId,
-      productType,
-      filePath: file.path,
-      originalName: file.originalname,
-      fileSize: file.size
-    }));
+    const total = req.files.length;
+    const items = [];
+
+    for (let i = 0; i < total; i++) {
+      const file = req.files[i];
+      const ext = path.extname(file.originalname);
+      const base = path.basename(file.originalname, ext)
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .slice(0, 80);
+      const remoteName = `${Date.now()}-${crypto.randomBytes(3).toString('hex')}-${base}${ext}`;
+      const remotePath = `/digital-items/${remoteName}`;
+
+      io.of('/admin').to('admins').emit('digital_upload_progress', {
+        index: i,
+        total,
+        fileName: file.originalname,
+        fileSize: file.size,
+        status: 'uploading'
+      });
+
+      await bunnyUpload(remotePath, file.buffer, file.mimetype);
+
+      items.push({
+        productId,
+        productType,
+        filePath: remotePath,
+        originalName: file.originalname,
+        fileSize: file.size
+      });
+
+      io.of('/admin').to('admins').emit('digital_upload_progress', {
+        index: i + 1,
+        total,
+        fileName: file.originalname,
+        fileSize: file.size,
+        status: 'done'
+      });
+    }
 
     await DigitalItem.insertMany(items);
 
     const newCount = await syncProductCounts(productId, productType);
 
+    io.of('/admin').to('admins').emit('digital_upload_progress', {
+      index: total,
+      total,
+      status: 'complete',
+      newCount
+    });
+
     return res.status(201).json({
       message: `${items.length} file(s) uploaded`,
       uploaded: items.length,
-      newCount
+      newCount,
+      files: items.map(f => ({ originalName: f.originalName, fileSize: f.fileSize }))
     });
   } catch (error) {
     console.error('[DigitalItem] upload error:', error);
@@ -72,7 +110,7 @@ export const uploadDigitalItems = async (req, res) => {
 export const getDigitalItems = async (req, res) => {
   try {
     const { productId, productType } = req.params;
-    const { page = 1, limit = 20, status, search } = req.query;
+    const { page = 1, limit = 20, status, search, startDate, endDate } = req.query;
 
     const query = { productId, productType };
     if (status) query.status = status;
@@ -82,6 +120,19 @@ export const getDigitalItems = async (req, res) => {
         { originalName: { $regex: safe, $options: 'i' } },
         { uid: { $regex: safe, $options: 'i' } }
       ];
+    }
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) {
+        const s = new Date(startDate);
+        s.setHours(0, 0, 0, 0);
+        query.createdAt.$gte = s;
+      }
+      if (endDate) {
+        const e = new Date(endDate);
+        e.setHours(23, 59, 59, 999);
+        query.createdAt.$lte = e;
+      }
     }
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -114,17 +165,22 @@ export const downloadDigitalItem = async (req, res) => {
     const item = await DigitalItem.findOne({ uid: req.params.uid });
     if (!item) return res.status(404).json({ message: 'Item not found' });
 
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    if (item.fileSize) res.setHeader('Content-Length', item.fileSize);
+
+    if (isBunnyPath(item.filePath)) {
+      const { stream } = await bunnyDownload(item.filePath);
+      return stream.pipe(res);
+    }
+
     if (!fs.existsSync(item.filePath)) {
       return res.status(404).json({ message: 'File not found on disk' });
     }
-
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', item.fileSize);
     fs.createReadStream(item.filePath).pipe(res);
   } catch (error) {
     console.error('[DigitalItem] download error:', error);
-    return res.status(500).json({ message: 'Server error' });
+    if (!res.headersSent) return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -137,7 +193,9 @@ export const deleteDigitalItem = async (req, res) => {
       return res.status(400).json({ message: 'Cannot delete a sold item' });
     }
 
-    if (fs.existsSync(item.filePath)) {
+    if (isBunnyPath(item.filePath)) {
+      await bunnyDelete(item.filePath);
+    } else if (fs.existsSync(item.filePath)) {
       fs.unlinkSync(item.filePath);
     }
 
@@ -174,7 +232,7 @@ export const purchaseProduct = async (req, res) => {
   const customer = await CustomerUser.findOneAndUpdate(
     { _id: customerId, balance: { $gte: totalAmount } },
     { $inc: { balance: -totalAmount } },
-    { new: true }
+    { returnDocument: 'after' }
   );
 
   if (!customer) {
@@ -187,7 +245,7 @@ export const purchaseProduct = async (req, res) => {
       const item = await DigitalItem.findOneAndUpdate(
         { productId, productType, status: 'available' },
         { $set: { status: 'sold' } },
-        { new: true }
+        { returnDocument: 'after' }
       );
       if (!item) {
         if (reservedIds.length > 0) {
@@ -199,7 +257,9 @@ export const purchaseProduct = async (req, res) => {
       reservedIds.push(item._id);
     }
 
-    const titleStr = product.title?.ru || product.title?.en || product.name || '';
+    const titleRu = product.title?.ru || product.title?.en || product.name || '';
+    const titleEn = product.title?.en || product.title?.ru || product.name || '';
+    const titleStr = titleRu;
     const descStr = product.desc?.ru || product.desc?.en || '';
 
     const order = await Order.create({
@@ -241,8 +301,11 @@ export const purchaseProduct = async (req, res) => {
     const notif = await Notification.create({
       userId: customerId,
       type: 'order_delivered',
-      title: 'Товар доставлен',
-      message: `Вы приобрели: ${titleStr}${qty > 1 ? ` (x${qty})` : ''}`,
+      title: { ru: 'Товар доставлен', en: 'Product delivered' },
+      message: {
+        ru: `Вы приобрели: ${titleRu}${qty > 1 ? ` (x${qty})` : ''}`,
+        en: `You purchased: ${titleEn}${qty > 1 ? ` (x${qty})` : ''}`
+      },
       link: `/profile/orders?search=${order.uid}`
     });
 
@@ -264,8 +327,8 @@ export const purchaseProduct = async (req, res) => {
       type: 'order_product',
       title: 'Новая покупка',
       message: `${customer.username} купил: ${titleStr}${qty > 1 ? ` (x${qty})` : ''} — $${totalAmount.toFixed(2)}`,
-      link: '/orders',
-      meta: { customerId, orderId: order._id, amount: totalAmount }
+      link: `/orders?search=${encodeURIComponent(order.uid)}`,
+      meta: { customerId, orderId: order._id, amount: totalAmount, orderUid: order.uid }
     });
 
     return res.status(200).json({

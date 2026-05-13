@@ -39,6 +39,15 @@ const serviceOrderSchema = new mongoose.Schema({
     title: { type: String, default: '' },
     price: { type: Number, default: 0 }
   },
+  amountPaid: { type: Number, default: 0 },
+  currency: { type: String, default: 'USD' },
+  paymentMethod: { type: String, default: '' },
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'paid'],
+    default: 'unpaid'
+  },
+  paymentTransactionUid: { type: String, default: '' },
   responses: [responseSchema],
   customerFiles: [fileSchema],
   resultFiles: [fileSchema],

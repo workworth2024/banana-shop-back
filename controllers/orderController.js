@@ -4,6 +4,7 @@ import DigitalItem from '../models/DigitalItem.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
+import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -91,13 +92,18 @@ export const downloadMyItemFile = async (req, res) => {
     );
     if (!item) return res.status(404).json({ message: 'Item not found in this order' });
 
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    if (item.fileSize) res.setHeader('Content-Length', item.fileSize);
+
+    if (isBunnyPath(item.filePath)) {
+      const { stream } = await bunnyDownload(item.filePath);
+      return stream.pipe(res);
+    }
+
     if (!fs.existsSync(item.filePath)) {
       return res.status(404).json({ message: 'File not found on disk' });
     }
-
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', item.fileSize);
     return fs.createReadStream(item.filePath).pipe(res);
   } catch (error) {
     console.error('[Orders] downloadMyItemFile error:', error);
@@ -172,9 +178,13 @@ export const getAllOrders = async (req, res) => {
 };
 
 const ORDER_STATUS_LABELS = {
-  unpaid: 'Не оплачен', pending: 'Ожидает', paid: 'Оплачен',
-  delivered: 'Доставлен', cancelled: 'Отменён', replaced: 'Заменён',
-  waiting_replacement: 'Ждёт замены'
+  unpaid:              { ru: 'Не оплачен',    en: 'Unpaid' },
+  pending:             { ru: 'Ожидает',        en: 'Pending' },
+  paid:                { ru: 'Оплачен',         en: 'Paid' },
+  delivered:           { ru: 'Доставлен',       en: 'Delivered' },
+  cancelled:           { ru: 'Отменён',          en: 'Cancelled' },
+  replaced:            { ru: 'Заменён',           en: 'Replaced' },
+  waiting_replacement: { ru: 'Ждёт замены',      en: 'Awaiting replacement' }
 };
 
 export const updateOrderStatus = async (req, res) => {
@@ -188,17 +198,21 @@ export const updateOrderStatus = async (req, res) => {
     const order = await Order.findByIdAndUpdate(
       req.params.id,
       { $set: { status } },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
     try {
+      const statusLabels = ORDER_STATUS_LABELS[status] || { ru: status, en: status };
       const notif = await Notification.create({
         userId: order.customerId,
         type: 'order_status',
-        title: 'Статус заказа изменён',
-        message: `Заказ ${order.uid}: статус → ${ORDER_STATUS_LABELS[status] || status}`,
+        title: { ru: 'Статус заказа изменён', en: 'Order status updated' },
+        message: {
+          ru: `Заказ ${order.uid}: статус → ${statusLabels.ru}`,
+          en: `Order ${order.uid}: status → ${statusLabels.en}`
+        },
         link: '/profile/orders'
       });
       io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {

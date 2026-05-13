@@ -114,7 +114,7 @@ export const updateUser = async (req, res) => {
       updateData.password = await bcrypt.hash(password, 10);
     }
 
-    const updatedUser = await User.findByIdAndUpdate(id, updateData, { new: true })
+    const updatedUser = await User.findByIdAndUpdate(id, updateData, { returnDocument: 'after' })
       .populate('role_id')
       .select('-password');
 

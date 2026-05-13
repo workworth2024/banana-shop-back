@@ -12,11 +12,11 @@ const notificationSchema = new mongoose.Schema({
     default: 'system'
   },
   title: {
-    type: String,
+    type: mongoose.Schema.Types.Mixed,
     required: true
   },
   message: {
-    type: String,
+    type: mongoose.Schema.Types.Mixed,
     required: true
   },
   link: {

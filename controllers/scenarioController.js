@@ -51,7 +51,7 @@ export const updateScenario = async (req, res) => {
     const scenario = await Scenario.findByIdAndUpdate(
       req.params.id,
       { title, description, steps },
-      { new: true, runValidators: true }
+      { returnDocument: 'after', runValidators: true }
     );
     if (!scenario) return res.status(404).json({ message: 'Scenario not found' });
     return res.json(scenario);

@@ -31,6 +31,16 @@ const preorderSchema = new mongoose.Schema({
   telegram: { type: String, required: true, trim: true },
   desired_quantity: { type: Number, required: true, min: 1 },
   comment: { type: String, default: '', trim: true },
+  unitPriceSnapshot: { type: Number, default: 0 },
+  amountPaid: { type: Number, default: 0 },
+  currency: { type: String, default: 'USD' },
+  paymentMethod: { type: String, default: '' },
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'paid'],
+    default: 'unpaid'
+  },
+  paymentTransactionUid: { type: String, default: '' },
   status: {
     type: String,
     enum: ['pending', 'in_progress', 'completed', 'cancelled'],

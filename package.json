@@ -21,6 +21,7 @@
   "homepage": "https://github.com/workworth2024/banana-shop-back#readme",
   "description": "",
   "dependencies": {
+    "@bunny.net/storage-sdk": "^0.3.1",
     "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

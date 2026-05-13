@@ -4,8 +4,35 @@ import { io } from '../server.js';
 
 const MAX_PER_CATEGORY = 100;
 
+/** type из createAdminNotif → ключ enabled в AdminNotifSettings */
+const TYPE_TO_TOGGLE_KEY = {
+  order_product: 'order_product',
+  order_preorder: 'order_preorder',
+  order_service: 'order_service',
+  replace_request: 'order_replacement',
+  transaction_deposit: 'transaction_deposit',
+  transaction_payment: 'transaction_payment',
+  user_registration: 'user_registration'
+};
+
+async function adminWantsNotificationByType(notificationType) {
+  const toggleKey = TYPE_TO_TOGGLE_KEY[notificationType];
+  if (!toggleKey) return true;
+
+  const docs = await AdminNotifSettings.find({}).select('enabled').lean();
+  if (docs.length === 0) return true;
+
+  return docs.some((d) => {
+    const v = d.enabled?.[toggleKey];
+    return v !== false;
+  });
+}
+
 export const createAdminNotif = async ({ category, type, title, message, link = null, meta = {} }) => {
   try {
+    const enabled = await adminWantsNotificationByType(type);
+    if (!enabled) return;
+
     const notif = await AdminNotification.create({ category, type, title, message, link, meta });
     const count = await AdminNotification.countDocuments({ category });
     if (count > MAX_PER_CATEGORY) {
@@ -108,7 +135,7 @@ export const updateNotifSettings = async (req, res) => {
     const settings = await AdminNotifSettings.findOneAndUpdate(
       { adminId: req.user._id },
       { $set: { enabled } },
-      { new: true, upsert: true }
+      { returnDocument: 'after', upsert: true }
     );
     return res.status(200).json({ settings });
   } catch (err) {

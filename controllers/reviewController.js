@@ -1,4 +1,18 @@
 import Review from '../models/Review.js';
+import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
+
+const deleteReviewImage = (image) => {
+  if (!image) return;
+  deleteAnyFile(image);
+};
+
+const uploadReviewImage = async (file) => {
+  const filename = generateFilename(file.originalname);
+  const remotePath = `/reviews/${filename}`;
+  await bunnyUpload(remotePath, file.buffer, file.mimetype);
+  return getBunnyPublicUrl(remotePath);
+};
 
 export const getReviews = async (req, res) => {
   try {
@@ -19,7 +33,6 @@ export const getReviews = async (req, res) => {
       .limit(parseInt(limit));
 
     const total = await Review.countDocuments(query);
-
     res.json({ reviews, total, pages: Math.ceil(total / limit) });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching reviews' });
@@ -28,12 +41,9 @@ export const getReviews = async (req, res) => {
 
 export const createReview = async (req, res) => {
   try {
-    const text = {
-      ru: req.body?.['text.ru'] || '',
-      en: req.body?.['text.en'] || ''
-    };
+    const text = { ru: req.body?.['text.ru'] || '', en: req.body?.['text.en'] || '' };
     const link = req.body?.link || '';
-    const image = req.file ? `/uploads/reviews/${req.file.filename}` : '';
+    const image = req.file ? await uploadReviewImage(req.file) : '';
 
     const review = await Review.create({ text, link, image });
     res.status(201).json(review);
@@ -48,17 +58,16 @@ export const updateReview = async (req, res) => {
     const { id } = req.params;
     const updateData = {
       link: req.body?.link || '',
-      text: {
-        ru: req.body?.['text.ru'] || '',
-        en: req.body?.['text.en'] || ''
-      }
+      text: { ru: req.body?.['text.ru'] || '', en: req.body?.['text.en'] || '' }
     };
 
     if (req.file) {
-      updateData.image = `/uploads/reviews/${req.file.filename}`;
+      const old = await Review.findById(id).select('image');
+      deleteReviewImage(old?.image);
+      updateData.image = await uploadReviewImage(req.file);
     }
 
-    const review = await Review.findByIdAndUpdate(id, updateData, { new: true });
+    const review = await Review.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
     res.json(review);
   } catch (error) {
     console.error('updateReview error:', error.message, error.stack);
@@ -68,7 +77,8 @@ export const updateReview = async (req, res) => {
 
 export const deleteReview = async (req, res) => {
   try {
-    await Review.findByIdAndDelete(req.params.id);
+    const review = await Review.findByIdAndDelete(req.params.id);
+    deleteReviewImage(review?.image);
     res.json({ message: 'Review deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting review' });

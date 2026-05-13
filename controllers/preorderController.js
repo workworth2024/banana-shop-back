@@ -1,15 +1,13 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import Preorder from '../models/Preorder.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
+import YoutubeProduct from '../models/YoutubeProduct.js';
+import CustomerUser from '../models/CustomerUser.js';
+import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
-import { deleteUploadFile } from '../utils/deleteFile.js';
 import { createAdminNotif } from './adminNotifController.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PREORDERS_DIR = path.join(__dirname, '..', 'uploads', 'preorders');
+import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
 
 const NOTIF_TITLES = {
   in_progress: { ru: 'Предзаказ взят в работу', en: 'Preorder in progress' },
@@ -18,9 +16,9 @@ const NOTIF_TITLES = {
 };
 
 const NOTIF_MSGS = {
-  in_progress: (uid) => `Ваш предзаказ ${uid} взят в работу`,
-  completed:   (uid) => `Ваш предзаказ ${uid} выполнен — файлы доступны для скачивания`,
-  cancelled:   (uid) => `Ваш предзаказ ${uid} был отменён`,
+  in_progress: (uid) => ({ ru: `Ваш предзаказ ${uid} взят в работу`, en: `Your preorder ${uid} is in progress` }),
+  completed:   (uid) => ({ ru: `Ваш предзаказ ${uid} выполнен — файлы доступны для скачивания`, en: `Your preorder ${uid} is completed — files are ready to download` }),
+  cancelled:   (uid) => ({ ru: `Ваш предзаказ ${uid} был отменён`, en: `Your preorder ${uid} has been cancelled` }),
 };
 
 async function sendPreorderNotif(preorder) {
@@ -32,7 +30,7 @@ async function sendPreorderNotif(preorder) {
   const notif = await Notification.create({
     userId: customerId,
     type: 'preorder_status',
-    title: titles.ru,
+    title: titles,
     message: NOTIF_MSGS[status](uid),
     link: `/profile/preorders?search=${uid}`
   });
@@ -45,39 +43,107 @@ async function sendPreorderNotif(preorder) {
 
 export const createPreorder = async (req, res) => {
   try {
-    const { google_item_id, name, telegram, desired_quantity, comment } = req.body;
-    if (!google_item_id || !name || !telegram || !desired_quantity) {
-      return res.status(400).json({ message: 'Обязательные поля: google_item_id, name, telegram, desired_quantity' });
+    if (!req.customer?._id) {
+      return res.status(401).json({ message: 'Войдите в аккаунт для оформления предзаказа' });
     }
-    const product = await GoogleAdsProduct.findById(google_item_id);
+
+    const customerId = req.customer._id;
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment } = req.body;
+
+    let product = null;
+    let productType = 'google';
+
+    if (youtube_item_id) {
+      product = await YoutubeProduct.findById(youtube_item_id);
+      productType = 'youtube';
+    } else if (google_item_id) {
+      product = await GoogleAdsProduct.findById(google_item_id);
+      productType = 'google';
+    } else {
+      return res.status(400).json({ message: 'Укажите товар предзаказа (google_item_id или youtube_item_id)' });
+    }
+
     if (!product) return res.status(404).json({ message: 'Товар не найден' });
+    if (!name || !telegram || desired_quantity === undefined || desired_quantity === null) {
+      return res.status(400).json({ message: 'Обязательные поля: name, telegram, desired_quantity' });
+    }
 
-    const preorderData = {
-      google_item_id,
-      name: String(name).trim().slice(0, 200),
-      telegram: String(telegram).trim().slice(0, 100),
-      desired_quantity: parseInt(desired_quantity),
-      comment: comment ? String(comment).trim().slice(0, 1000) : ''
-    };
+    const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10)));
+    if (Number.isNaN(qty)) {
+      return res.status(400).json({ message: 'Некорректное количество' });
+    }
 
-    if (req.customer?._id) preorderData.customerId = req.customer._id;
+    const unitPrice = parseFloat(Number(product.price) || 0);
+    if (unitPrice <= 0) {
+      return res.status(400).json({ message: 'Предзаказ этого товара временно недоступен' });
+    }
 
-    const preorder = await Preorder.create(preorderData);
+    const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
 
-    const productTitle = product.title?.ru || product.title?.en || String(google_item_id);
-    createAdminNotif({
-      category: 'order_preorder',
-      type: 'order_preorder',
-      title: 'Новый предзаказ',
-      message: `${preorder.name} оформил предзаказ на «${productTitle}» (${preorder.desired_quantity} шт.) — ${preorder.uid}`,
-      link: `/preorders`,
-      meta: { preorderId: preorder._id, uid: preorder.uid }
-    });
+    const customer = await CustomerUser.findOneAndUpdate(
+      { _id: customerId, balance: { $gte: totalAmount } },
+      { $inc: { balance: -totalAmount } },
+      { returnDocument: 'after' }
+    );
 
-    res.status(201).json(preorder);
+    if (!customer) {
+      return res.status(400).json({ message: 'Недостаточно средств на балансе' });
+    }
+
+    try {
+      const preorder = await Preorder.create({
+        google_item_id: productType === 'google' ? product._id : null,
+        youtube_item_id: productType === 'youtube' ? product._id : null,
+        productType,
+        customerId,
+        name: String(name).trim().slice(0, 200),
+        telegram: String(telegram).trim().slice(0, 100),
+        desired_quantity: qty,
+        comment: comment ? String(comment).trim().slice(0, 1000) : '',
+        unitPriceSnapshot: unitPrice,
+        amountPaid: totalAmount,
+        currency: 'USD',
+        paymentMethod: 'balance',
+        paymentStatus: 'paid'
+      });
+
+      const txDoc = await Transaction.create({
+        userId: customerId,
+        type: 'preorder',
+        status: 'success',
+        amount: -totalAmount,
+        currency: 'USD',
+        note: `Preorder ${preorder.uid} x${qty}`
+      });
+      await Preorder.updateOne({ _id: preorder._id }, { paymentTransactionUid: txDoc.uid });
+
+      io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
+        balance: customer.balance
+      });
+
+      const productTitle = product.title?.ru || product.title?.en || String(product._id);
+      createAdminNotif({
+        category: 'order_preorder',
+        type: 'order_preorder',
+        title: 'Новый предзаказ',
+        message: `${preorder.name} оплатил предзаказ «${productTitle}» (${qty} шт.) — ${preorder.uid} — $${totalAmount.toFixed(2)}`,
+        link: `/preorders?search=${encodeURIComponent(preorder.uid)}`,
+        meta: { preorderId: preorder._id, uid: preorder.uid, amount: totalAmount }
+      });
+
+      return res.status(201).json({
+        ...preorder.toObject(),
+        paymentTransactionUid: txDoc.uid,
+        paymentStatus: 'paid'
+      });
+    } catch (inner) {
+      await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } }).catch(() => {});
+      console.error('[Preorder] createPreorder rollback:', inner);
+      return res.status(500).json({ message: inner.message || 'Ошибка оформления предзаказа' });
+    }
   } catch (error) {
     console.error('[Preorder] createPreorder error:', error);
-    res.status(500).json({ message: error.message || 'Error creating preorder' });
+    return res.status(500).json({ message: error.message || 'Error creating preorder' });
   }
 };
 
@@ -130,7 +196,7 @@ export const updatePreorderStatus = async (req, res) => {
       return res.status(400).json({ message: 'Invalid status' });
     }
 
-    const preorder = await Preorder.findByIdAndUpdate(id, { status }, { new: true })
+    const preorder = await Preorder.findByIdAndUpdate(id, { status }, { returnDocument: 'after' })
       .populate('google_item_id', 'title');
     if (!preorder) return res.status(404).json({ message: 'Preorder not found' });
 
@@ -145,16 +211,15 @@ export const updatePreorderStatus = async (req, res) => {
 export const uploadPreorderFiles = async (req, res) => {
   try {
     const preorder = await Preorder.findById(req.params.id);
-    if (!preorder) {
-      if (req.files) req.files.forEach(f => fs.existsSync(f.path) && fs.unlinkSync(f.path));
-      return res.status(404).json({ message: 'Preorder not found' });
-    }
+    if (!preorder) return res.status(404).json({ message: 'Preorder not found' });
 
-    const newFiles = (req.files || []).map(f => ({
-      path: f.path,
-      originalName: f.originalname,
-      size: f.size
-    }));
+    const newFiles = [];
+    for (const f of (req.files || [])) {
+      const filename = generateFilename(f.originalname);
+      const remotePath = `/preorders/${filename}`;
+      await bunnyUpload(remotePath, f.buffer, f.mimetype);
+      newFiles.push({ path: remotePath, originalName: f.originalname, size: f.size });
+    }
 
     preorder.files.push(...newFiles);
     await preorder.save();
@@ -175,7 +240,7 @@ export const deletePreorderFile = async (req, res) => {
     const fileEntry = preorder.files.id(fileId);
     if (!fileEntry) return res.status(404).json({ message: 'File not found' });
 
-    if (fs.existsSync(fileEntry.path)) fs.unlinkSync(fileEntry.path);
+    deleteAnyFile(fileEntry.path);
     preorder.files.pull(fileId);
     await preorder.save();
 
@@ -213,6 +278,7 @@ export const getMyPreorders = async (req, res) => {
     const skip = (Number(page) - 1) * Number(limit);
     const preorders = await Preorder.find(query)
       .populate('google_item_id', 'title path_image')
+      .populate('youtube_item_id', 'title path_image')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
@@ -241,16 +307,23 @@ export const downloadMyPreorderFile = async (req, res) => {
     const fileEntry = preorder.files.id(fileId);
     if (!fileEntry) return res.status(404).json({ message: 'Файл не найден' });
 
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileEntry.originalName)}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    if (fileEntry.size) res.setHeader('Content-Length', fileEntry.size);
+
+    if (isBunnyPath(fileEntry.path)) {
+      const { stream } = await bunnyDownload(fileEntry.path);
+      return stream.pipe(res);
+    }
+
+    const fs = await import('fs');
     if (!fs.existsSync(fileEntry.path)) {
       return res.status(404).json({ message: 'Файл не найден на сервере' });
     }
-
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileEntry.originalName)}"`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-    fs.createReadStream(fileEntry.path).pipe(res);
+    return fs.createReadStream(fileEntry.path).pipe(res);
   } catch (error) {
     console.error('[Preorder] downloadMyPreorderFile error:', error);
-    res.status(500).json({ message: 'Server error' });
+    if (!res.headersSent) res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -259,7 +332,7 @@ export const deletePreorder = async (req, res) => {
     const preorder = await Preorder.findByIdAndDelete(req.params.id);
     if (preorder?.files?.length) {
       for (const f of preorder.files) {
-        if (f.path && fs.existsSync(f.path)) fs.unlinkSync(f.path);
+        deleteAnyFile(f.path);
       }
     }
     res.json({ message: 'Preorder deleted' });
