@@ -12,7 +12,8 @@ const TYPE_TO_TOGGLE_KEY = {
   replace_request: 'order_replacement',
   transaction_deposit: 'transaction_deposit',
   transaction_payment: 'transaction_payment',
-  user_registration: 'user_registration'
+  user_registration: 'user_registration',
+  support_new_ticket: 'support_ticket'
 };
 
 async function adminWantsNotificationByType(notificationType) {

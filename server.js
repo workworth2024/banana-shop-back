@@ -77,7 +77,95 @@ io.of('/customer').on('connection', async (socket) => {
   });
 });
 
-io.of('/support').on('connection', (socket) => {
+/* ===== Support namespace (real-time tickets) ===== */
+import jwt from 'jsonwebtoken';
+import cookie from 'cookie';
+
+const supportNs = io.of('/support');
+
+const parseCookies = (raw) => {
+  try { return raw ? cookie.parse(raw) : {}; } catch { return {}; }
+};
+
+supportNs.use(async (socket, next) => {
+  try {
+    const cookies = parseCookies(socket.handshake.headers?.cookie);
+    const customerToken = cookies.customer_token;
+    const adminToken = cookies.token;
+
+    if (customerToken) {
+      try {
+        const decoded = jwt.verify(customerToken, process.env.JWT_SECRET);
+        if (decoded.type === 'customer') {
+          const { default: CustomerSession } = await import('./models/CustomerSession.js');
+          const session = await CustomerSession.findOne({ token: customerToken, userId: decoded.id });
+          if (session && session.expire >= new Date()) {
+            socket.data = { role: 'customer', userId: String(decoded.id) };
+            return next();
+          }
+        }
+      } catch {}
+    }
+
+    if (adminToken) {
+      try {
+        const decoded = jwt.verify(adminToken, process.env.JWT_SECRET);
+        if (decoded.type === 'admin') {
+          const { default: Session } = await import('./models/Session.js');
+          const session = await Session.findOne({ token: adminToken, userId: decoded.id });
+          if (session && session.expire >= new Date()) {
+            const { default: User } = await import('./models/User.js');
+            const user = await User.findById(decoded.id).populate('role_id');
+            if (user && user.status && user.role_id?.access !== 'nothing' && user.role_id?.name !== 'new') {
+              socket.data = { role: 'staff', userId: String(decoded.id), access: user.role_id?.access };
+              return next();
+            }
+          }
+        }
+      } catch {}
+    }
+
+    return next(new Error('unauthorized'));
+  } catch (e) {
+    return next(new Error('unauthorized'));
+  }
+});
+
+supportNs.on('connection', async (socket) => {
+  const { role, userId } = socket.data || {};
+  if (role === 'staff') {
+    socket.join('support:staff');
+  } else if (role === 'customer') {
+    socket.join(`customer:${userId}`);
+  }
+
+  const checkTicketAccess = async (ticketId) => {
+    if (!ticketId || !/^[a-f0-9]{24}$/i.test(String(ticketId))) return false;
+    if (role === 'staff') return true;
+    try {
+      const { default: SupportTicket } = await import('./models/SupportTicket.js');
+      const t = await SupportTicket.findById(ticketId).select('customerId').lean();
+      return t && String(t.customerId) === String(userId);
+    } catch { return false; }
+  };
+
+  socket.on('ticket:join', async ({ ticketId } = {}) => {
+    if (!(await checkTicketAccess(ticketId))) return;
+    socket.join(`ticket:${ticketId}`);
+    socket.to(`ticket:${ticketId}`).emit('presence', { ticketId, role, online: true });
+  });
+
+  socket.on('ticket:leave', ({ ticketId } = {}) => {
+    if (!ticketId) return;
+    socket.leave(`ticket:${ticketId}`);
+    socket.to(`ticket:${ticketId}`).emit('presence', { ticketId, role, online: false });
+  });
+
+  socket.on('ticket:typing', async ({ ticketId, typing } = {}) => {
+    if (!(await checkTicketAccess(ticketId))) return;
+    socket.to(`ticket:${ticketId}`).emit('ticket:typing', { ticketId, by: role, typing: !!typing });
+  });
+
   socket.on('disconnect', () => {});
 });
 
