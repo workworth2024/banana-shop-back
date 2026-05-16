@@ -41,8 +41,17 @@ app.set('trust proxy', 1);
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 8000;
 
+const ALLOWED_ORIGINS = (process.env.WHITE_LIST || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const corsOptions = {
-  origin: process.env.WHITE_LIST?.split(',') || [],
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error('Not allowed by CORS'));
+  },
   credentials: true
 };
 
@@ -225,6 +234,7 @@ mongoose.connect(process.env.MONGO_URI)
     await seedRoles();
     await seedCurrencies();
     await migrateProductUids();
+    await migrateServiceUids();
     cleanOldReplacePhotos();
   })
   .catch(err => console.error('MongoDB connection error:', err));
@@ -270,6 +280,20 @@ async function migrateProductUids() {
     if (total > 0) console.log(`[migrate] Added uid to ${gadsNoUid.length} GoogleAds + ${ytNoUid.length} YouTube products`);
   } catch (e) {
     console.error('[migrate] migrateProductUids error:', e.message);
+  }
+}
+
+async function migrateServiceUids() {
+  try {
+    const crypto = await import('crypto');
+    const { default: Service } = await import('./models/Service.js');
+    const noUid = await Service.find({ $or: [{ uid: { $exists: false } }, { uid: null }, { uid: '' }] }).select('_id');
+    for (const s of noUid) {
+      await Service.updateOne({ _id: s._id }, { $set: { uid: 'SRV-' + crypto.randomBytes(4).toString('hex').toUpperCase() } });
+    }
+    if (noUid.length > 0) console.log(`[migrate] Added uid to ${noUid.length} services`);
+  } catch (e) {
+    console.error('[migrate] migrateServiceUids error:', e.message);
   }
 }
 

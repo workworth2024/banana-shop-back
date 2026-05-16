@@ -1,6 +1,7 @@
 import Service from '../models/Service.js';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const deleteServiceImage = (path_image) => {
   if (!path_image) return;
@@ -20,11 +21,13 @@ export const getServices = async (req, res) => {
     const query = {};
 
     if (search) {
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
-        { 'title.ru': { $regex: search, $options: 'i' } },
-        { 'title.en': { $regex: search, $options: 'i' } },
-        { 'sub_title.ru': { $regex: search, $options: 'i' } },
-        { 'sub_title.en': { $regex: search, $options: 'i' } }
+        { uid: { $regex: safe, $options: 'i' } },
+        { 'title.ru': { $regex: safe, $options: 'i' } },
+        { 'title.en': { $regex: safe, $options: 'i' } },
+        { 'sub_title.ru': { $regex: safe, $options: 'i' } },
+        { 'sub_title.en': { $regex: safe, $options: 'i' } }
       ];
     }
 

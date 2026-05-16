@@ -1,6 +1,7 @@
 import Review from '../models/Review.js';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const deleteReviewImage = (image) => {
   if (!image) return;
@@ -20,9 +21,10 @@ export const getReviews = async (req, res) => {
     const query = {};
 
     if (search) {
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
-        { 'text.ru': { $regex: search, $options: 'i' } },
-        { 'text.en': { $regex: search, $options: 'i' } }
+        { 'text.ru': { $regex: safe, $options: 'i' } },
+        { 'text.en': { $regex: safe, $options: 'i' } }
       ];
     }
 

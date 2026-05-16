@@ -1,4 +1,5 @@
 import ContactForm from '../models/ContactForm.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 export const createContactForm = async (req, res) => {
   try {
@@ -19,10 +20,11 @@ export const getContactForms = async (req, res) => {
     const query = {};
 
     if (search) {
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { telegram: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+        { name: { $regex: safe, $options: 'i' } },
+        { telegram: { $regex: safe, $options: 'i' } },
+        { email: { $regex: safe, $options: 'i' } }
       ];
     }
 

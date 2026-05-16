@@ -12,6 +12,7 @@ import CustomerUser from '../models/CustomerUser.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDelete, bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -115,7 +116,7 @@ export const getDigitalItems = async (req, res) => {
     const query = { productId, productType };
     if (status) query.status = status;
     if (search) {
-      const safe = String(search).slice(0, 100);
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
         { originalName: { $regex: safe, $options: 'i' } },
         { uid: { $regex: safe, $options: 'i' } }

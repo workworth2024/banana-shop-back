@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import Role from '../models/Role.js';
 import bcrypt from 'bcryptjs';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 // Get all users with pagination, filtering and search
 export const getUsers = async (req, res) => {
@@ -11,9 +12,10 @@ export const getUsers = async (req, res) => {
 
     // Search by username or email
     if (search) {
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
-        { username: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
+        { username: { $regex: safe, $options: 'i' } },
+        { email: { $regex: safe, $options: 'i' } }
       ];
     }
 

@@ -3,6 +3,7 @@ import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 import mongoose from 'mongoose';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const addDateFilter = (query, startDate, endDate) => {
   if (startDate || endDate) {
@@ -17,14 +18,15 @@ const addDateFilter = (query, startDate, endDate) => {
 };
 
 const buildSearchQuery = (search) => {
-  const safeSearch = String(search).slice(0, 200);
+  const raw = String(search).slice(0, 100);
+  const safeSearch = escapeRegex(raw);
   const conditions = [
     { 'title.ru': { $regex: safeSearch, $options: 'i' } },
     { 'title.en': { $regex: safeSearch, $options: 'i' } },
     { uid: { $regex: safeSearch, $options: 'i' } }
   ];
-  if (mongoose.isValidObjectId(search)) {
-    conditions.push({ _id: new mongoose.Types.ObjectId(search) });
+  if (mongoose.isValidObjectId(raw)) {
+    conditions.push({ _id: new mongoose.Types.ObjectId(raw) });
   }
   return { $or: conditions };
 };

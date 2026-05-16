@@ -8,6 +8,7 @@ import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const NOTIF_TITLES = {
   in_progress: { ru: 'Предзаказ взят в работу', en: 'Preorder in progress' },
@@ -153,7 +154,7 @@ export const getPreorders = async (req, res) => {
     const query = {};
 
     if (search) {
-      const safe = String(search).slice(0, 200);
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
         { name: { $regex: safe, $options: 'i' } },
         { telegram: { $regex: safe, $options: 'i' } },

@@ -5,6 +5,7 @@ import Notification from '../models/Notification.js';
 import bcrypt from 'bcryptjs';
 import { io, onlineCustomers } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 export const getCustomers = async (req, res) => {
   try {
@@ -13,7 +14,7 @@ export const getCustomers = async (req, res) => {
     const query = {};
 
     if (search) {
-      const safeSearch = String(search).slice(0, 200);
+      const safeSearch = escapeRegex(String(search).slice(0, 100));
       query.$or = [
         { username: { $regex: safeSearch, $options: 'i' } },
         { email: { $regex: safeSearch, $options: 'i' } },
@@ -211,7 +212,7 @@ export const getAdminTransactions = async (req, res) => {
     }
 
     if (search) {
-      const safe = String(search).slice(0, 100);
+      const safe = escapeRegex(String(search).slice(0, 100));
       const matchingCustomers = await CustomerUser.find({
         $or: [
           { username: { $regex: safe, $options: 'i' } },

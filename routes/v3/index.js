@@ -19,6 +19,7 @@ import healthRoutes from './healthRoutes.js';
 import scenarioRoutes from './scenarioRoutes.js';
 import serviceOrderRoutes from './serviceOrderRoutes.js';
 import supportRoutes from './supportRoutes.js';
+import dashboardRoutes from './dashboardRoutes.js';
 
 const router = express.Router();
 
@@ -42,5 +43,6 @@ router.use('/health', healthRoutes);
 router.use('/scenarios', scenarioRoutes);
 router.use('/service-orders', serviceOrderRoutes);
 router.use('/support', supportRoutes);
+router.use('/admin/dashboard', dashboardRoutes);
 
 export default router;

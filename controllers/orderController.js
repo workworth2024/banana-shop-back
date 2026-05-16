@@ -5,6 +5,7 @@ import CustomerUser from '../models/CustomerUser.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -14,7 +15,7 @@ export const getMyOrders = async (req, res) => {
     const query = { customerId };
 
     if (search) {
-      const safe = String(search).slice(0, 100);
+      const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
         { uid: { $regex: safe, $options: 'i' } },
         { 'productSnapshot.title': { $regex: safe, $options: 'i' } }
@@ -33,12 +34,14 @@ export const getMyOrders = async (req, res) => {
       }
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const pg = Math.min(10000, Math.max(1, parseInt(page) || 1));
+    const lim = Math.min(100, Math.max(1, parseInt(limit) || 10));
+    const skip = (pg - 1) * lim;
 
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(Number(limit))
+      .limit(lim)
       .select('-digitalItemId -accessKey')
       .populate('digitalItemIds', 'uid originalName fileSize');
 
@@ -47,8 +50,8 @@ export const getMyOrders = async (req, res) => {
     return res.status(200).json({
       orders,
       total,
-      pages: Math.ceil(total / Number(limit)),
-      currentPage: Number(page)
+      pages: Math.ceil(total / lim),
+      currentPage: pg
     });
   } catch (error) {
     console.error('[Orders] getMyOrders error:', error);
@@ -127,7 +130,7 @@ export const getAllOrders = async (req, res) => {
     }
 
     if (search) {
-      const safe = String(search).slice(0, 100);
+      const safe = escapeRegex(String(search).slice(0, 100));
       const orConditions = [
         { uid: { $regex: safe, $options: 'i' } },
         { 'productSnapshot.title': { $regex: safe, $options: 'i' } }
@@ -152,12 +155,14 @@ export const getAllOrders = async (req, res) => {
 
     if (status) query.status = status;
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const pg = Math.min(10000, Math.max(1, parseInt(page) || 1));
+    const lim = Math.min(200, Math.max(1, parseInt(limit) || 20));
+    const skip = (pg - 1) * lim;
 
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(Number(limit))
+      .limit(lim)
       .select('-accessKey')
       .populate('customerId', 'username uid')
       .populate('digitalItemIds', 'uid originalName')
@@ -168,8 +173,8 @@ export const getAllOrders = async (req, res) => {
     return res.status(200).json({
       orders,
       total,
-      pages: Math.ceil(total / Number(limit)),
-      currentPage: Number(page)
+      pages: Math.ceil(total / lim),
+      currentPage: pg
     });
   } catch (error) {
     console.error('[Orders] getAllOrders error:', error);

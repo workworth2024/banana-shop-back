@@ -13,6 +13,18 @@ const PREVIEW_LEN = 140;
 const safeStr = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 const isObjId = (v) => typeof v === 'string' && /^[a-f0-9]{24}$/i.test(v);
 
+const clampInt = (v, def, min, max) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+};
+
+const safeDate = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
 const ticketRoom = (id) => `ticket:${id}`;
 const STAFF_ROOM = 'support:staff';
 const customerRoom = (id) => `customer:${id}`;
@@ -63,15 +75,17 @@ const uploadAttachments = async (ticketUid, files) => {
 
 export const customerListTickets = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status } = req.query;
+    const page = clampInt(req.query.page, 1, 1, 10000);
+    const limit = clampInt(req.query.limit, 20, 1, 50);
     const q = { customerId: req.customer._id };
     if (status && ['open', 'pending', 'closed'].includes(status)) q.status = status;
-    const skip = (Number(page) - 1) * Number(limit);
+    const skip = (page - 1) * limit;
     const [items, total] = await Promise.all([
-      SupportTicket.find(q).sort({ lastMessageAt: -1 }).skip(skip).limit(Number(limit)).lean(),
+      SupportTicket.find(q).sort({ lastMessageAt: -1 }).skip(skip).limit(limit).lean(),
       SupportTicket.countDocuments(q)
     ]);
-    res.json({ items, total, pages: Math.ceil(total / Number(limit)) });
+    res.json({ items, total, pages: Math.ceil(total / limit) || 1, page, limit });
   } catch (e) {
     console.error('[support] customerListTickets', e);
     res.status(500).json({ message: 'Server error' });
@@ -80,12 +94,16 @@ export const customerListTickets = async (req, res) => {
 
 export const customerGetTicket = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findOne({ _id: req.params.id, customerId: req.customer._id }).lean();
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    const limit = clampInt(req.query.limit, 30, 1, 100);
     const messages = await SupportMessage.find({ ticketId: ticket._id, deletedAt: null })
-      .sort({ createdAt: -1 }).limit(50).lean();
+      .sort({ createdAt: -1 }).limit(limit + 1).lean();
+    const hasMore = messages.length > limit;
+    if (hasMore) messages.pop();
     messages.reverse();
-    res.json({ ticket, messages });
+    res.json({ ticket, messages, hasMore });
   } catch (e) {
     console.error('[support] customerGetTicket', e);
     res.status(500).json({ message: 'Server error' });
@@ -94,14 +112,18 @@ export const customerGetTicket = async (req, res) => {
 
 export const customerGetMessages = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findOne({ _id: req.params.id, customerId: req.customer._id }).select('_id').lean();
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
-    const { before, limit = 30 } = req.query;
+    const limit = clampInt(req.query.limit, 30, 1, 100);
+    const before = safeDate(req.query.before);
     const q = { ticketId: ticket._id, deletedAt: null };
-    if (before) q.createdAt = { $lt: new Date(before) };
-    const messages = await SupportMessage.find(q).sort({ createdAt: -1 }).limit(Math.min(Number(limit), 100)).lean();
+    if (before) q.createdAt = { $lt: before };
+    const messages = await SupportMessage.find(q).sort({ createdAt: -1 }).limit(limit + 1).lean();
+    const hasMore = messages.length > limit;
+    if (hasMore) messages.pop();
     messages.reverse();
-    res.json({ messages });
+    res.json({ messages, hasMore });
   } catch (e) {
     console.error('[support] customerGetMessages', e);
     res.status(500).json({ message: 'Server error' });
@@ -112,8 +134,8 @@ export const customerCreateTicket = async (req, res) => {
   try {
     const subject = safeStr(req.body.subject, SUBJECT_MAX) || 'Support request';
     const text = safeStr(req.body.text, TEXT_MAX);
-    const attachments = await uploadAttachments('new', req.files || []);
-    if (!text && attachments.length === 0) {
+    const filesCount = (req.files || []).length;
+    if (!text && filesCount === 0) {
       return res.status(400).json({ message: 'Empty message' });
     }
     const ticket = await SupportTicket.create({
@@ -121,11 +143,16 @@ export const customerCreateTicket = async (req, res) => {
       subject,
       status: 'open',
       lastMessageAt: new Date(),
-      lastMessagePreview: buildPreview(text, attachments),
+      lastMessagePreview: text ? text.slice(0, PREVIEW_LEN) : (filesCount ? `📎 ${filesCount}` : ''),
       lastMessageBy: 'customer',
       unreadByStaff: 1,
       meta: { ip: req.ip, ua: req.headers['user-agent']?.slice(0, 200) }
     });
+    const attachments = await uploadAttachments(ticket.uid, req.files || []);
+    if (attachments.length) {
+      ticket.lastMessagePreview = buildPreview(text, attachments);
+      await ticket.save();
+    }
     const message = await SupportMessage.create({
       ticketId: ticket._id,
       senderRole: 'customer',
@@ -158,13 +185,15 @@ export const customerCreateTicket = async (req, res) => {
 
 export const customerSendMessage = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     if (ticket.status === 'closed') return res.status(409).json({ message: 'Ticket is closed' });
 
     const text = safeStr(req.body.text, TEXT_MAX);
+    const filesCount = (req.files || []).length;
+    if (!text && filesCount === 0) return res.status(400).json({ message: 'Empty message' });
     const attachments = await uploadAttachments(ticket.uid, req.files || []);
-    if (!text && attachments.length === 0) return res.status(400).json({ message: 'Empty message' });
 
     const message = await SupportMessage.create({
       ticketId: ticket._id,
@@ -196,6 +225,7 @@ export const customerSendMessage = async (req, res) => {
 
 export const customerMarkRead = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     if (ticket.unreadByCustomer > 0) {
@@ -235,17 +265,22 @@ export const customerActiveTickets = async (req, res) => {
 
 export const staffListTickets = async (req, res) => {
   try {
-    const { status, q, from, to, page = 1, limit = 30 } = req.query;
+    const { status } = req.query;
+    const page = clampInt(req.query.page, 1, 1, 10000);
+    const limit = clampInt(req.query.limit, 30, 1, 100);
+    const from = safeDate(req.query.from);
+    const to = safeDate(req.query.to);
     const filter = {};
     if (status && ['open', 'pending', 'closed'].includes(status)) filter.status = status;
     if (from || to) {
       filter.lastMessageAt = {};
-      if (from) filter.lastMessageAt.$gte = new Date(from);
-      if (to) filter.lastMessageAt.$lte = new Date(to);
+      if (from) filter.lastMessageAt.$gte = from;
+      if (to) filter.lastMessageAt.$lte = to;
     }
 
-    if (q && typeof q === 'string') {
-      const safe = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (typeof req.query.q === 'string' && req.query.q.trim()) {
+      const raw = req.query.q.trim().slice(0, 64);
+      const safe = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const customers = await CustomerUser.find({
         $or: [
           { username: { $regex: safe, $options: 'i' } },
@@ -256,9 +291,9 @@ export const staffListTickets = async (req, res) => {
       filter.customerId = { $in: customers.map(c => c._id) };
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const skip = (page - 1) * limit;
     const [items, total, openCount] = await Promise.all([
-      populateTicketForList(SupportTicket.find(filter).sort({ lastMessageAt: -1 }).skip(skip).limit(Number(limit))).lean(),
+      populateTicketForList(SupportTicket.find(filter).sort({ lastMessageAt: -1 }).skip(skip).limit(limit)).lean(),
       SupportTicket.countDocuments(filter),
       SupportTicket.countDocuments({ status: { $in: ['open', 'pending'] } })
     ]);
@@ -268,7 +303,7 @@ export const staffListTickets = async (req, res) => {
       customerOnline: onlineCustomers.has(String(t.customerId?._id || t.customerId))
     }));
 
-    res.json({ items: withOnline, total, pages: Math.ceil(total / Number(limit)), openCount });
+    res.json({ items: withOnline, total, pages: Math.ceil(total / limit) || 1, openCount, page, limit });
   } catch (e) {
     console.error('[support] staffListTickets', e);
     res.status(500).json({ message: 'Server error' });
@@ -277,13 +312,17 @@ export const staffListTickets = async (req, res) => {
 
 export const staffGetTicket = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await populateTicketForList(SupportTicket.findById(req.params.id)).lean();
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    const limit = clampInt(req.query.limit, 30, 1, 100);
     const messages = await SupportMessage.find({ ticketId: ticket._id, deletedAt: null })
-      .sort({ createdAt: -1 }).limit(50).lean();
+      .sort({ createdAt: -1 }).limit(limit + 1).lean();
+    const hasMore = messages.length > limit;
+    if (hasMore) messages.pop();
     messages.reverse();
     ticket.customerOnline = onlineCustomers.has(String(ticket.customerId?._id || ticket.customerId));
-    res.json({ ticket, messages });
+    res.json({ ticket, messages, hasMore });
   } catch (e) {
     console.error('[support] staffGetTicket', e);
     res.status(500).json({ message: 'Server error' });
@@ -292,12 +331,16 @@ export const staffGetTicket = async (req, res) => {
 
 export const staffGetMessages = async (req, res) => {
   try {
-    const { before, limit = 30 } = req.query;
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
+    const limit = clampInt(req.query.limit, 30, 1, 100);
+    const before = safeDate(req.query.before);
     const q = { ticketId: req.params.id, deletedAt: null };
-    if (before) q.createdAt = { $lt: new Date(before) };
-    const messages = await SupportMessage.find(q).sort({ createdAt: -1 }).limit(Math.min(Number(limit), 100)).lean();
+    if (before) q.createdAt = { $lt: before };
+    const messages = await SupportMessage.find(q).sort({ createdAt: -1 }).limit(limit + 1).lean();
+    const hasMore = messages.length > limit;
+    if (hasMore) messages.pop();
     messages.reverse();
-    res.json({ messages });
+    res.json({ messages, hasMore });
   } catch (e) {
     console.error('[support] staffGetMessages', e);
     res.status(500).json({ message: 'Server error' });
@@ -306,13 +349,15 @@ export const staffGetMessages = async (req, res) => {
 
 export const staffSendMessage = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findById(req.params.id);
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     if (ticket.status === 'closed') return res.status(409).json({ message: 'Ticket is closed' });
 
     const text = safeStr(req.body.text, TEXT_MAX);
+    const filesCount = (req.files || []).length;
+    if (!text && filesCount === 0) return res.status(400).json({ message: 'Empty message' });
     const attachments = await uploadAttachments(ticket.uid, req.files || []);
-    if (!text && attachments.length === 0) return res.status(400).json({ message: 'Empty message' });
 
     const message = await SupportMessage.create({
       ticketId: ticket._id,
@@ -346,6 +391,7 @@ export const staffSendMessage = async (req, res) => {
 
 export const staffAssign = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const { userId } = req.body;
     const target = userId && isObjId(userId) ? userId : req.user._id;
     const ticket = await SupportTicket.findByIdAndUpdate(
@@ -365,6 +411,7 @@ export const staffAssign = async (req, res) => {
 
 export const staffClose = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findById(req.params.id);
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     if (ticket.status === 'closed') return res.json({ ok: true });
@@ -394,6 +441,7 @@ export const staffClose = async (req, res) => {
 
 export const staffReopen = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findById(req.params.id);
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     ticket.status = 'open';
@@ -419,6 +467,7 @@ export const staffReopen = async (req, res) => {
 
 export const staffMarkRead = async (req, res) => {
   try {
+    if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });
     const ticket = await SupportTicket.findById(req.params.id);
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
     if (ticket.unreadByStaff > 0) {

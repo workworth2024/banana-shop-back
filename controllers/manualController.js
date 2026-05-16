@@ -1,6 +1,7 @@
 import Manual from '../models/Manual.js';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile, extractImageUrls } from '../utils/deleteFile.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const deleteManualFile = (urlOrPath) => {
   if (!urlOrPath) return;
@@ -17,7 +18,7 @@ const uploadManualFile = async (file) => {
 export const getManuals = async (req, res) => {
   try {
     const { page = 1, limit = 10, search = '', filter, tag, startDate, endDate } = req.query;
-    const safeSearch = String(search).slice(0, 200);
+    const safeSearch = escapeRegex(String(search).slice(0, 100));
     const query = {};
 
     if (safeSearch) {
