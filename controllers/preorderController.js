@@ -9,6 +9,7 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { isValidGeo } from '../utils/geos.js';
 
 const NOTIF_TITLES = {
   in_progress: { ru: 'Предзаказ взят в работу', en: 'Preorder in progress' },
@@ -49,7 +50,7 @@ export const createPreorder = async (req, res) => {
     }
 
     const customerId = req.customer._id;
-    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment } = req.body;
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo } = req.body;
 
     let product = null;
     let productType = 'google';
@@ -67,6 +68,15 @@ export const createPreorder = async (req, res) => {
     if (!product) return res.status(404).json({ message: 'Товар не найден' });
     if (!name || !telegram || desired_quantity === undefined || desired_quantity === null) {
       return res.status(400).json({ message: 'Обязательные поля: name, telegram, desired_quantity' });
+    }
+
+    const geoCode = String(geo || '').trim().toUpperCase();
+    if (!geoCode || !isValidGeo(geoCode)) {
+      return res.status(400).json({ message: 'Выберите гео для предзаказа' });
+    }
+    const productGeoCodes = (product.geos || []).map(g => g.code);
+    if (productGeoCodes.length && !productGeoCodes.includes(geoCode)) {
+      return res.status(400).json({ message: `Гео ${geoCode} недоступно для этого товара` });
     }
 
     const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10)));
@@ -97,6 +107,7 @@ export const createPreorder = async (req, res) => {
         youtube_item_id: productType === 'youtube' ? product._id : null,
         productType,
         customerId,
+        geo: geoCode,
         name: String(name).trim().slice(0, 200),
         telegram: String(telegram).trim().slice(0, 100),
         desired_quantity: qty,

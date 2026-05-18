@@ -235,6 +235,7 @@ mongoose.connect(process.env.MONGO_URI)
     await seedCurrencies();
     await migrateProductUids();
     await migrateServiceUids();
+    await migrateProductGeos();
     cleanOldReplacePhotos();
   })
   .catch(err => console.error('MongoDB connection error:', err));
@@ -294,6 +295,40 @@ async function migrateServiceUids() {
     if (noUid.length > 0) console.log(`[migrate] Added uid to ${noUid.length} services`);
   } catch (e) {
     console.error('[migrate] migrateServiceUids error:', e.message);
+  }
+}
+
+async function migrateProductGeos() {
+  try {
+    const models = [
+      { Model: GoogleAdsProduct, name: 'GoogleAds' },
+      { Model: YoutubeProduct, name: 'YouTube' }
+    ];
+    for (const { Model, name } of models) {
+      const docs = await Model.find({
+        $or: [
+          { geos: { $exists: false } },
+          { geos: { $size: 0 } }
+        ]
+      }).select('_id geo counts');
+      let migrated = 0;
+      for (const d of docs) {
+        const raw = d.get('geo');
+        const code = (raw ? String(raw) : 'US').trim().toUpperCase() || 'US';
+        const c = Math.max(0, parseInt(d.counts, 10) || 0);
+        await Model.updateOne(
+          { _id: d._id },
+          { $set: { geos: [{ code, counts: c }], counts: c }, $unset: { geo: '' } }
+        );
+        migrated++;
+      }
+      const stragglers = await Model.updateMany({ geo: { $exists: true } }, { $unset: { geo: '' } });
+      if (migrated > 0 || stragglers.modifiedCount > 0) {
+        console.log(`[migrate] ${name}: converted ${migrated} to geos[], unset legacy geo on ${stragglers.modifiedCount}`);
+      }
+    }
+  } catch (e) {
+    console.error('[migrate] migrateProductGeos error:', e.message);
   }
 }
 

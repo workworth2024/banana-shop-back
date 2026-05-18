@@ -51,9 +51,16 @@ const youtubeProductSchema = new mongoose.Schema({
   },
   counts: {
     type: Number,
-    required: true,
+    required: false,
     min: 0,
     default: 0
+  },
+  geos: {
+    type: [{
+      code: { type: String, required: true, uppercase: true, trim: true },
+      counts: { type: Number, default: 0, min: 0 }
+    }],
+    default: []
   },
   path_image: {
     type: String,
@@ -63,11 +70,6 @@ const youtubeProductSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Filter',
     required: false
-  },
-  geo: {
-    type: String,
-    required: false,
-    default: 'US'
   },
   link: {
     type: String,

@@ -4,6 +4,18 @@ import mongoose from 'mongoose';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { sanitizeGeos } from '../utils/geos.js';
+
+const parseGeosFromBody = (body) => {
+  let raw = body.geos;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = []; }
+  }
+  return sanitizeGeos(raw);
+};
+
+const totalCountsFromGeos = (geos) =>
+  (Array.isArray(geos) ? geos : []).reduce((s, g) => s + (Number(g.counts) || 0), 0);
 
 const addDateFilter = (query, startDate, endDate) => {
   if (startDate || endDate) {
@@ -63,7 +75,7 @@ export const getYoutubeProducts = async (req, res) => {
     if (search) Object.assign(query, buildSearchQuery(search));
     if (filter) query.filter_id = filter;
     if (type) query.type = type;
-    if (geo) query.geo = geo;
+    if (geo) query['geos.code'] = String(geo).toUpperCase();
     addDateFilter(query, startDate, endDate);
 
     const { pageNum, limitNum, skip } = parseProductListPaging(req.query);
@@ -75,7 +87,7 @@ export const getYoutubeProducts = async (req, res) => {
 
     const total = await YoutubeProduct.countDocuments(query);
     const availableTypes = await YoutubeProduct.distinct('type');
-    const availableGeos = await YoutubeProduct.distinct('geo');
+    const availableGeos = await YoutubeProduct.distinct('geos.code');
     const pages = Math.ceil(total / limitNum) || 1;
 
     res.json({
@@ -94,7 +106,7 @@ export const getYoutubeProducts = async (req, res) => {
 
 export const createYoutubeProduct = async (req, res) => {
   try {
-    const { type, price, counts, geo } = req.body;
+    const { type, price } = req.body;
     const title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
     const desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     const link = req.body.link || '';
@@ -102,8 +114,10 @@ export const createYoutubeProduct = async (req, res) => {
     const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
 
     const path_image = req.file ? await uploadProductImage(req.file) : '';
+    const geos = parseGeosFromBody(req.body);
+    const counts = totalCountsFromGeos(geos);
 
-    const productData = { type, title, desc, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
+    const productData = { type, title, desc, price, counts, geos, path_image, link, wholesale_price, count_for_wholesale };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) productData.filter_id = filterId;
 
@@ -117,9 +131,11 @@ export const createYoutubeProduct = async (req, res) => {
 export const updateYoutubeProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { type, price, counts, geo } = req.body;
+    const { type, price } = req.body;
+    const geos = parseGeosFromBody(req.body);
     const updateData = {
-      type, price, counts, geo,
+      type, price, geos,
+      counts: totalCountsFromGeos(geos),
       link: req.body.link || '',
       wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
       count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null
@@ -179,7 +195,7 @@ export const getGoogleAdsProducts = async (req, res) => {
     if (search) Object.assign(query, buildSearchQuery(search));
     if (filter) query.filter_id = filter;
     if (type) query.type = type;
-    if (geo) query.geo = geo;
+    if (geo) query['geos.code'] = String(geo).toUpperCase();
     addDateFilter(query, startDate, endDate);
 
     const { pageNum, limitNum, skip } = parseProductListPaging(req.query);
@@ -191,7 +207,7 @@ export const getGoogleAdsProducts = async (req, res) => {
 
     const total = await GoogleAdsProduct.countDocuments(query);
     const availableTypes = await GoogleAdsProduct.distinct('type');
-    const availableGeos = await GoogleAdsProduct.distinct('geo');
+    const availableGeos = await GoogleAdsProduct.distinct('geos.code');
     const pages = Math.ceil(total / limitNum) || 1;
 
     res.json({
@@ -210,7 +226,7 @@ export const getGoogleAdsProducts = async (req, res) => {
 
 export const createGoogleAdsProduct = async (req, res) => {
   try {
-    const { type, price, counts, geo } = req.body;
+    const { type, price } = req.body;
     const link = req.body.link || '';
     const wholesale_price = req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null;
     const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
@@ -221,8 +237,10 @@ export const createGoogleAdsProduct = async (req, res) => {
     const receive = { ru: req.body['receive.ru'] || '', en: req.body['receive.en'] || '' };
 
     const path_image = req.file ? await uploadProductImage(req.file) : '';
+    const geos = parseGeosFromBody(req.body);
+    const counts = totalCountsFromGeos(geos);
 
-    const productData = { type, title, sub_title, desc, inclusive, receive, price, counts, geo, path_image, link, wholesale_price, count_for_wholesale };
+    const productData = { type, title, sub_title, desc, inclusive, receive, price, counts, geos, path_image, link, wholesale_price, count_for_wholesale };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) productData.filter_id = filterId;
 
@@ -236,9 +254,11 @@ export const createGoogleAdsProduct = async (req, res) => {
 export const updateGoogleAdsProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { type, price, counts, geo } = req.body;
+    const { type, price } = req.body;
+    const geos = parseGeosFromBody(req.body);
     const updateData = {
-      type, price, counts, geo,
+      type, price, geos,
+      counts: totalCountsFromGeos(geos),
       link: req.body.link || '',
       wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
       count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null

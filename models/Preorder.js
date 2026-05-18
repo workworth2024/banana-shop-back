@@ -27,6 +27,7 @@ const preorderSchema = new mongoose.Schema({
     enum: ['google', 'youtube'],
     default: 'google'
   },
+  geo: { type: String, default: '', uppercase: true, trim: true },
   name: { type: String, required: true, trim: true },
   telegram: { type: String, required: true, trim: true },
   desired_quantity: { type: Number, required: true, min: 1 },

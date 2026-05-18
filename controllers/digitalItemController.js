@@ -13,6 +13,7 @@ import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDelete, bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { isValidGeo } from '../utils/geos.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -22,10 +23,18 @@ const getProductModel = (productType) => {
 
 const syncProductCounts = async (productId, productType) => {
   const ProductModel = getProductModel(productType);
-  if (!ProductModel) return;
-  const count = await DigitalItem.countDocuments({ productId, productType, status: 'available' });
-  await ProductModel.findByIdAndUpdate(productId, { counts: count });
-  return count;
+  if (!ProductModel) return 0;
+  const product = await ProductModel.findById(productId).select('geos');
+  if (!product) return 0;
+  const geos = Array.isArray(product.geos) ? product.geos.map(g => g.code) : [];
+  const updatedGeos = [];
+  for (const code of geos) {
+    const c = await DigitalItem.countDocuments({ productId, productType, geo: code, status: 'available' });
+    updatedGeos.push({ code, counts: c });
+  }
+  const total = updatedGeos.reduce((s, g) => s + g.counts, 0);
+  await ProductModel.findByIdAndUpdate(productId, { geos: updatedGeos, counts: total });
+  return { total, geos: updatedGeos };
 };
 
 export const uploadDigitalItems = async (req, res) => {
@@ -41,6 +50,15 @@ export const uploadDigitalItems = async (req, res) => {
 
     const product = await ProductModel.findById(productId);
     if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    const geo = String(req.body.geo || req.query.geo || '').trim().toUpperCase();
+    if (!geo || !isValidGeo(geo)) {
+      return res.status(400).json({ message: 'Invalid or missing geo code' });
+    }
+    const productGeoCodes = (product.geos || []).map(g => g.code);
+    if (!productGeoCodes.includes(geo)) {
+      return res.status(400).json({ message: `Geo ${geo} is not configured for this product` });
+    }
 
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ message: 'No files uploaded' });
@@ -71,6 +89,7 @@ export const uploadDigitalItems = async (req, res) => {
       items.push({
         productId,
         productType,
+        geo,
         filePath: remotePath,
         originalName: file.originalname,
         fileSize: file.size
@@ -87,19 +106,23 @@ export const uploadDigitalItems = async (req, res) => {
 
     await DigitalItem.insertMany(items);
 
-    const newCount = await syncProductCounts(productId, productType);
+    const syncResult = await syncProductCounts(productId, productType);
+    const newCount = syncResult.total;
 
     io.of('/admin').to('admins').emit('digital_upload_progress', {
       index: total,
       total,
       status: 'complete',
-      newCount
+      newCount,
+      geos: syncResult.geos
     });
 
     return res.status(201).json({
       message: `${items.length} file(s) uploaded`,
       uploaded: items.length,
       newCount,
+      geo,
+      geos: syncResult.geos,
       files: items.map(f => ({ originalName: f.originalName, fileSize: f.fileSize }))
     });
   } catch (error) {
@@ -111,10 +134,11 @@ export const uploadDigitalItems = async (req, res) => {
 export const getDigitalItems = async (req, res) => {
   try {
     const { productId, productType } = req.params;
-    const { page = 1, limit = 20, status, search, startDate, endDate } = req.query;
+    const { page = 1, limit = 20, status, search, startDate, endDate, geo } = req.query;
 
     const query = { productId, productType };
     if (status) query.status = status;
+    if (geo) query.geo = String(geo).toUpperCase();
     if (search) {
       const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
@@ -145,15 +169,25 @@ export const getDigitalItems = async (req, res) => {
       .select('-filePath');
 
     const total = await DigitalItem.countDocuments(query);
-    const available = await DigitalItem.countDocuments({ productId, productType, status: 'available' });
-    const sold = await DigitalItem.countDocuments({ productId, productType, status: 'sold' });
+    const baseStatsQuery = { productId, productType };
+    if (geo) baseStatsQuery.geo = String(geo).toUpperCase();
+    const available = await DigitalItem.countDocuments({ ...baseStatsQuery, status: 'available' });
+    const sold = await DigitalItem.countDocuments({ ...baseStatsQuery, status: 'sold' });
+
+    const ProductModel = getProductModel(productType);
+    let productGeos = [];
+    if (ProductModel) {
+      const p = await ProductModel.findById(productId).select('geos');
+      productGeos = (p?.geos || []).map(g => ({ code: g.code, counts: g.counts }));
+    }
 
     return res.status(200).json({
       items,
       total,
       pages: Math.ceil(total / Number(limit)),
       currentPage: Number(page),
-      stats: { available, sold }
+      stats: { available, sold },
+      productGeos
     });
   } catch (error) {
     console.error('[DigitalItem] list error:', error);
@@ -212,7 +246,7 @@ export const deleteDigitalItem = async (req, res) => {
 };
 
 export const purchaseProduct = async (req, res) => {
-  const { productId, productType, quantity = 1 } = req.body;
+  const { productId, productType, quantity = 1, geo } = req.body;
   const qty = Math.max(1, Math.min(50, parseInt(quantity) || 1));
   const customerId = req.customer._id;
 
@@ -227,6 +261,15 @@ export const purchaseProduct = async (req, res) => {
 
   const product = await ProductModel.findById(productId);
   if (!product) return res.status(404).json({ message: 'Product not found' });
+
+  const geoCode = String(geo || '').trim().toUpperCase();
+  if (!geoCode || !isValidGeo(geoCode)) {
+    return res.status(400).json({ message: 'Geo is required' });
+  }
+  const productGeoCodes = (product.geos || []).map(g => g.code);
+  if (!productGeoCodes.includes(geoCode)) {
+    return res.status(400).json({ message: `Geo ${geoCode} is not available for this product` });
+  }
 
   const totalAmount = parseFloat((product.price * qty).toFixed(2));
 
@@ -244,7 +287,7 @@ export const purchaseProduct = async (req, res) => {
   try {
     for (let i = 0; i < qty; i++) {
       const item = await DigitalItem.findOneAndUpdate(
-        { productId, productType, status: 'available' },
+        { productId, productType, geo: geoCode, status: 'available' },
         { $set: { status: 'sold' } },
         { returnDocument: 'after' }
       );
@@ -253,7 +296,7 @@ export const purchaseProduct = async (req, res) => {
           await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { status: 'available', orderId: null } });
         }
         await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } });
-        return res.status(400).json({ message: `Only ${reservedIds.length} items available` });
+        return res.status(400).json({ message: `Only ${reservedIds.length} items available for ${geoCode}` });
       }
       reservedIds.push(item._id);
     }
@@ -267,6 +310,7 @@ export const purchaseProduct = async (req, res) => {
       customerId,
       productId,
       productType,
+      geo: geoCode,
       digitalItemId: reservedIds[0],
       digitalItemIds: reservedIds,
       quantity: qty,
@@ -276,7 +320,8 @@ export const purchaseProduct = async (req, res) => {
         productType,
         productSubType: product.type || '',
         price: product.price,
-        image: product.path_image || product.image || ''
+        image: product.path_image || product.image || '',
+        geo: geoCode
       },
       amount: totalAmount,
       currency: 'USD',

@@ -41,13 +41,20 @@ const orderSchema = new mongoose.Schema({
     default: 1,
     min: 1
   },
+  geo: {
+    type: String,
+    default: '',
+    uppercase: true,
+    trim: true
+  },
   productSnapshot: {
     title: { type: String, default: '' },
     description: { type: String, default: '' },
     productType: { type: String, default: '' },
     productSubType: { type: String, default: '' },
     price: { type: Number, default: 0 },
-    image: { type: String, default: '' }
+    image: { type: String, default: '' },
+    geo: { type: String, default: '' }
   },
   amount: {
     type: Number,

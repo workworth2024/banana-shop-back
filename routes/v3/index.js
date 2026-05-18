@@ -20,6 +20,7 @@ import scenarioRoutes from './scenarioRoutes.js';
 import serviceOrderRoutes from './serviceOrderRoutes.js';
 import supportRoutes from './supportRoutes.js';
 import dashboardRoutes from './dashboardRoutes.js';
+import cryptoCloudRoutes from './cryptoCloudRoutes.js';
 
 const router = express.Router();
 
@@ -44,5 +45,6 @@ router.use('/scenarios', scenarioRoutes);
 router.use('/service-orders', serviceOrderRoutes);
 router.use('/support', supportRoutes);
 router.use('/admin/dashboard', dashboardRoutes);
+router.use('/cryptocloud', cryptoCloudRoutes);
 
 export default router;

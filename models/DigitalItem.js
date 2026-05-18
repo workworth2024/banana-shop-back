@@ -17,6 +17,12 @@ const digitalItemSchema = new mongoose.Schema({
     required: true,
     enum: ['GoogleAdsProduct', 'YoutubeProduct']
   },
+  geo: {
+    type: String,
+    required: true,
+    uppercase: true,
+    trim: true
+  },
   filePath: {
     type: String,
     required: true
@@ -42,5 +48,6 @@ const digitalItemSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 digitalItemSchema.index({ productId: 1, status: 1 });
+digitalItemSchema.index({ productId: 1, geo: 1, status: 1 });
 
 export default mongoose.model('DigitalItem', digitalItemSchema);
