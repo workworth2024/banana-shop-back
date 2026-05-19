@@ -208,6 +208,7 @@ async function reserveItemsForRequest(items, customerId) {
 }
 
 export const checkoutProduct = async (req, res) => {
+  const preCreatedOrderIds = [];
   try {
     if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
 
@@ -219,20 +220,53 @@ export const checkoutProduct = async (req, res) => {
 
     const totalAmount = parseFloat(enrichedItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
 
+    for (const it of enrichedItems) {
+      const order = await Order.create({
+        customerId: req.customer._id,
+        productId: it.productId,
+        productType: it.productType,
+        geo: it.geo,
+        digitalItemId: new mongoose.Types.ObjectId(it.reservedIds[0]),
+        digitalItemIds: it.reservedIds.map(id => new mongoose.Types.ObjectId(id)),
+        quantity: it.quantity,
+        productSnapshot: {
+          title: it.titleRu,
+          description: it.descStr,
+          productType: it.productType,
+          productSubType: it.productSubType || '',
+          price: it.unitPrice,
+          image: it.productImage || '',
+          geo: it.geo
+        },
+        amount: parseFloat((it.unitPrice * it.quantity).toFixed(2)),
+        currency: 'USD',
+        paymentMethod: 'cryptocloud',
+        status: 'unpaid'
+      });
+      preCreatedOrderIds.push(String(order._id));
+    }
+
     const invoiceDoc = await CryptoCloudInvoice.create({
       customerId: req.customer._id,
       amount: totalAmount,
       currency: 'USD',
       status: 'created',
       intent: 'product',
-      intentPayload: { items: enrichedItems }
+      intentPayload: { items: enrichedItems, preCreatedOrderIds }
     });
 
     const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
     if (!cc.ok) {
       await releaseReservations(enrichedItems.flatMap(i => i.reservedIds));
+      await Order.deleteMany({ _id: { $in: preCreatedOrderIds } });
       return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
     }
+
+    const payLink = cc.result.link || '';
+    await Order.updateMany(
+      { _id: { $in: preCreatedOrderIds } },
+      { $set: { payLink, ccInvoiceId: String(invoiceDoc._id) } }
+    );
 
     return res.status(201).json({
       orderId: invoiceDoc.orderId,
@@ -243,12 +277,14 @@ export const checkoutProduct = async (req, res) => {
       expiry: cc.result.expiry_date
     });
   } catch (e) {
+    if (preCreatedOrderIds.length) await Order.deleteMany({ _id: { $in: preCreatedOrderIds } }).catch(() => {});
     err('checkoutProduct error:', e.message);
     return res.status(400).json({ message: e.message || 'Checkout error' });
   }
 };
 
 export const checkoutCart = async (req, res) => {
+  const preCreatedOrderIds = [];
   try {
     if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
 
@@ -258,20 +294,53 @@ export const checkoutCart = async (req, res) => {
     const { enrichedItems } = await reserveItemsForRequest(items, req.customer._id);
     const totalAmount = parseFloat(enrichedItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
 
+    for (const it of enrichedItems) {
+      const order = await Order.create({
+        customerId: req.customer._id,
+        productId: it.productId,
+        productType: it.productType,
+        geo: it.geo,
+        digitalItemId: new mongoose.Types.ObjectId(it.reservedIds[0]),
+        digitalItemIds: it.reservedIds.map(id => new mongoose.Types.ObjectId(id)),
+        quantity: it.quantity,
+        productSnapshot: {
+          title: it.titleRu,
+          description: it.descStr,
+          productType: it.productType,
+          productSubType: it.productSubType || '',
+          price: it.unitPrice,
+          image: it.productImage || '',
+          geo: it.geo
+        },
+        amount: parseFloat((it.unitPrice * it.quantity).toFixed(2)),
+        currency: 'USD',
+        paymentMethod: 'cryptocloud',
+        status: 'unpaid'
+      });
+      preCreatedOrderIds.push(String(order._id));
+    }
+
     const invoiceDoc = await CryptoCloudInvoice.create({
       customerId: req.customer._id,
       amount: totalAmount,
       currency: 'USD',
       status: 'created',
       intent: 'cart',
-      intentPayload: { items: enrichedItems }
+      intentPayload: { items: enrichedItems, preCreatedOrderIds }
     });
 
     const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
     if (!cc.ok) {
       await releaseReservations(enrichedItems.flatMap(i => i.reservedIds));
+      await Order.deleteMany({ _id: { $in: preCreatedOrderIds } });
       return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
     }
+
+    const payLink = cc.result.link || '';
+    await Order.updateMany(
+      { _id: { $in: preCreatedOrderIds } },
+      { $set: { payLink, ccInvoiceId: String(invoiceDoc._id) } }
+    );
 
     return res.status(201).json({
       orderId: invoiceDoc.orderId,
@@ -282,6 +351,7 @@ export const checkoutCart = async (req, res) => {
       expiry: cc.result.expiry_date
     });
   } catch (e) {
+    if (preCreatedOrderIds.length) await Order.deleteMany({ _id: { $in: preCreatedOrderIds } }).catch(() => {});
     err('checkoutCart error:', e.message);
     return res.status(400).json({ message: e.message || 'Checkout error' });
   }
@@ -355,6 +425,9 @@ export const checkoutService = async (req, res) => {
       return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
     }
 
+    const payLink = cc.result.link || '';
+    await ServiceOrder.findByIdAndUpdate(order._id, { $set: { payLink, ccInvoiceId: String(invoiceDoc._id) } }).catch(() => {});
+
     return res.status(201).json({
       orderId: invoiceDoc.orderId,
       uuid: cc.result.uuid,
@@ -417,6 +490,23 @@ export const checkoutPreorder = async (req, res) => {
     const productTitleRu = product.title?.ru || product.title?.en || String(product._id);
     const productTitleEn = product.title?.en || product.title?.ru || String(product._id);
 
+    const preorder = await Preorder.create({
+      google_item_id: productType === 'google' ? product._id : null,
+      youtube_item_id: productType === 'youtube' ? product._id : null,
+      productType,
+      customerId: req.customer._id,
+      geo: geoCode,
+      name: String(name).trim().slice(0, 200),
+      telegram: String(telegram).trim().slice(0, 100),
+      desired_quantity: qty,
+      comment: comment ? String(comment).trim().slice(0, 1000) : '',
+      unitPriceSnapshot: unitPrice,
+      amountPaid: totalAmount,
+      currency: 'USD',
+      paymentMethod: 'cryptocloud',
+      paymentStatus: 'unpaid'
+    });
+
     const invoiceDoc = await CryptoCloudInvoice.create({
       customerId: req.customer._id,
       amount: totalAmount,
@@ -424,6 +514,7 @@ export const checkoutPreorder = async (req, res) => {
       status: 'created',
       intent: 'preorder',
       intentPayload: {
+        preorderId: String(preorder._id),
         productId: String(product._id),
         productType,
         productModelType,
@@ -440,11 +531,18 @@ export const checkoutPreorder = async (req, res) => {
     });
 
     const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
-    if (!cc.ok) return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+    if (!cc.ok) {
+      await Preorder.findByIdAndDelete(preorder._id).catch(() => {});
+      return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+    }
+
+    const payLink = cc.result.link || '';
+    await Preorder.findByIdAndUpdate(preorder._id, { $set: { payLink, ccInvoiceId: String(invoiceDoc._id) } }).catch(() => {});
 
     return res.status(201).json({
       orderId: invoiceDoc.orderId,
       uuid: cc.result.uuid,
+      preorderUid: preorder.uid,
       amount: totalAmount,
       currency: 'USD',
       link: cc.result.link,
@@ -517,39 +615,53 @@ async function fulfillTopup(invoice, creditAmount) {
 
 async function fulfillProductsOrCart(invoice) {
   const items = invoice.intentPayload?.items || [];
+  const preCreatedOrderIds = invoice.intentPayload?.preCreatedOrderIds || [];
   if (!items.length) { warn('fulfillProductsOrCart: no items in payload', invoice.orderId); return; }
 
   const customer = await CustomerUser.findById(invoice.customerId);
   const createdOrders = [];
 
-  for (const it of items) {
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx];
     const reservedIds = (it.reservedIds || []).map(id => new mongoose.Types.ObjectId(id));
     const totalAmount = parseFloat((it.unitPrice * it.quantity).toFixed(2));
 
-    const order = await Order.create({
-      customerId: invoice.customerId,
-      productId: it.productId,
-      productType: it.productType,
-      geo: it.geo,
-      digitalItemId: reservedIds[0],
-      digitalItemIds: reservedIds,
-      quantity: it.quantity,
-      productSnapshot: {
-        title: it.titleRu,
-        description: it.descStr,
+    let order = null;
+    const preCreatedId = preCreatedOrderIds[idx];
+    if (preCreatedId && mongoose.isValidObjectId(preCreatedId)) {
+      order = await Order.findByIdAndUpdate(
+        preCreatedId,
+        { $set: { status: 'delivered', paidAt: new Date(), deliveredAt: new Date(), payLink: '' } },
+        { returnDocument: 'after' }
+      );
+    }
+
+    if (!order) {
+      order = await Order.create({
+        customerId: invoice.customerId,
+        productId: it.productId,
         productType: it.productType,
-        productSubType: it.productSubType || '',
-        price: it.unitPrice,
-        image: it.productImage || '',
-        geo: it.geo
-      },
-      amount: totalAmount,
-      currency: 'USD',
-      paymentMethod: 'cryptocloud',
-      status: 'delivered',
-      paidAt: new Date(),
-      deliveredAt: new Date()
-    });
+        geo: it.geo,
+        digitalItemId: reservedIds[0],
+        digitalItemIds: reservedIds,
+        quantity: it.quantity,
+        productSnapshot: {
+          title: it.titleRu,
+          description: it.descStr,
+          productType: it.productType,
+          productSubType: it.productSubType || '',
+          price: it.unitPrice,
+          image: it.productImage || '',
+          geo: it.geo
+        },
+        amount: totalAmount,
+        currency: 'USD',
+        paymentMethod: 'cryptocloud',
+        status: 'delivered',
+        paidAt: new Date(),
+        deliveredAt: new Date()
+      });
+    }
 
     await DigitalItem.updateMany(
       { _id: { $in: reservedIds } },
@@ -658,22 +770,33 @@ async function fulfillPreorder(invoice) {
     (Number(p.totalAmount) || (Number(p.unitPrice) * Number(p.desired_quantity))).toFixed(2)
   );
 
-  const preorder = await Preorder.create({
-    google_item_id: p.productType === 'google' ? p.productId : null,
-    youtube_item_id: p.productType === 'youtube' ? p.productId : null,
-    productType: p.productType,
-    customerId: invoice.customerId,
-    geo: p.geo,
-    name: p.name,
-    telegram: p.telegram,
-    desired_quantity: p.desired_quantity,
-    comment: p.comment || '',
-    unitPriceSnapshot: p.unitPrice,
-    amountPaid: totalAmount,
-    currency: 'USD',
-    paymentMethod: 'cryptocloud',
-    paymentStatus: 'paid'
-  });
+  let preorder = null;
+  if (p.preorderId && mongoose.isValidObjectId(p.preorderId)) {
+    preorder = await Preorder.findByIdAndUpdate(
+      p.preorderId,
+      { $set: { paymentStatus: 'paid', paymentMethod: 'cryptocloud', payLink: '' } },
+      { returnDocument: 'after' }
+    );
+  }
+
+  if (!preorder) {
+    preorder = await Preorder.create({
+      google_item_id: p.productType === 'google' ? p.productId : null,
+      youtube_item_id: p.productType === 'youtube' ? p.productId : null,
+      productType: p.productType,
+      customerId: invoice.customerId,
+      geo: p.geo,
+      name: p.name,
+      telegram: p.telegram,
+      desired_quantity: p.desired_quantity,
+      comment: p.comment || '',
+      unitPriceSnapshot: p.unitPrice,
+      amountPaid: totalAmount,
+      currency: 'USD',
+      paymentMethod: 'cryptocloud',
+      paymentStatus: 'paid'
+    });
+  }
 
   const tx = await Transaction.create({
     userId: invoice.customerId,
@@ -718,16 +841,33 @@ async function rollbackInvoice(invoice) {
     const ids = items.flatMap(i => (i.reservedIds || []).map(id => new mongoose.Types.ObjectId(id)));
     await releaseReservations(ids);
     log('rollback: released reservations', { invoice: invoice.orderId, count: ids.length });
+    const preCreatedOrderIds = invoice.intentPayload?.preCreatedOrderIds || [];
+    if (preCreatedOrderIds.length) {
+      await Order.updateMany(
+        { _id: { $in: preCreatedOrderIds }, status: 'unpaid' },
+        { $set: { status: 'cancelled', payLink: '' } }
+      );
+      log('rollback: cancelled pre-created orders', { count: preCreatedOrderIds.length });
+    }
+  } else if (invoice.intent === 'preorder') {
+    const preorderId = invoice.intentPayload?.preorderId;
+    if (preorderId && mongoose.isValidObjectId(preorderId)) {
+      await Preorder.findOneAndUpdate(
+        { _id: preorderId, paymentStatus: 'unpaid' },
+        { $set: { status: 'cancelled', paymentStatus: 'cancelled', payLink: '' } }
+      );
+      log('rollback: cancelled pre-created preorder', preorderId);
+    }
   } else if (invoice.intent === 'service') {
     const soId = invoice.intentPayload?.serviceOrderId;
     if (soId) {
       const so = await ServiceOrder.findById(soId);
       if (so && so.paymentStatus === 'pending_payment') {
-        for (const cf of (so.customerFiles || [])) {
-          if (cf.path) deleteAnyFile(cf.path);
-        }
-        await ServiceOrder.findByIdAndDelete(soId).catch(() => {});
-        log('rollback: deleted pending service order', soId);
+        so.paymentStatus = 'cancelled';
+        so.status = 'cancelled';
+        so.payLink = '';
+        await so.save();
+        log('rollback: cancelled pending service order', soId);
       }
     }
   }

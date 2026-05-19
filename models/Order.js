@@ -89,7 +89,9 @@ const orderSchema = new mongoose.Schema({
   deliveredAt: {
     type: Date,
     default: null
-  }
+  },
+  ccInvoiceId: { type: String, default: '' },
+  payLink: { type: String, default: '' }
 }, { timestamps: true });
 
 orderSchema.index({ customerId: 1, createdAt: -1 });

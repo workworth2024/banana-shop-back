@@ -48,6 +48,8 @@ const serviceOrderSchema = new mongoose.Schema({
     default: 'unpaid'
   },
   paymentTransactionUid: { type: String, default: '' },
+  ccInvoiceId: { type: String, default: '' },
+  payLink: { type: String, default: '' },
   responses: [responseSchema],
   customerFiles: [fileSchema],
   resultFiles: [fileSchema],

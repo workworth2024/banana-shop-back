@@ -38,10 +38,12 @@ const preorderSchema = new mongoose.Schema({
   paymentMethod: { type: String, default: '' },
   paymentStatus: {
     type: String,
-    enum: ['unpaid', 'paid'],
+    enum: ['unpaid', 'paid', 'cancelled'],
     default: 'unpaid'
   },
   paymentTransactionUid: { type: String, default: '' },
+  ccInvoiceId: { type: String, default: '' },
+  payLink: { type: String, default: '' },
   status: {
     type: String,
     enum: ['pending', 'in_progress', 'completed', 'cancelled'],
