@@ -43,7 +43,7 @@ const cryptoCloudInvoiceSchema = new mongoose.Schema({
   },
   intent: {
     type: String,
-    enum: ['topup', 'product', 'cart', 'service'],
+    enum: ['topup', 'product', 'cart', 'service', 'preorder'],
     default: 'topup',
     index: true
   },

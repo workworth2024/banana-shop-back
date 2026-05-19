@@ -6,7 +6,8 @@ import {
   debugPing,
   checkoutProduct,
   checkoutCart,
-  checkoutService
+  checkoutService,
+  checkoutPreorder
 } from '../../controllers/cryptoCloudController.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
 import uploadServiceOrder from '../../middlewares/uploadServiceOrderMiddleware.js';
@@ -19,6 +20,7 @@ router.post('/topup', verifyCustomer, createTopupInvoice);
 router.post('/checkout/product', verifyCustomer, express.json({ limit: '50kb' }), checkoutProduct);
 router.post('/checkout/cart', verifyCustomer, express.json({ limit: '200kb' }), checkoutCart);
 router.post('/checkout/service', verifyCustomer, uploadServiceOrder.any(), checkoutService);
+router.post('/checkout/preorder', verifyCustomer, express.json({ limit: '50kb' }), checkoutPreorder);
 router.get('/my-invoices', verifyCustomer, listMyInvoices);
 
 router.post(

@@ -10,6 +10,7 @@ import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import Service from '../models/Service.js';
 import ServiceOrder from '../models/ServiceOrder.js';
+import Preorder from '../models/Preorder.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, generateFilename } from '../utils/bunnyStorage.js';
@@ -371,6 +372,90 @@ export const checkoutService = async (req, res) => {
   }
 };
 
+export const checkoutPreorder = async (req, res) => {
+  try {
+    if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
+
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo } = req.body;
+
+    let product = null;
+    let productType = 'google';
+    let productModelType = 'GoogleAdsProduct';
+
+    if (youtube_item_id) {
+      if (!mongoose.isValidObjectId(youtube_item_id)) return res.status(400).json({ message: 'Invalid product ID' });
+      product = await YoutubeProduct.findById(youtube_item_id);
+      productType = 'youtube';
+      productModelType = 'YoutubeProduct';
+    } else if (google_item_id) {
+      if (!mongoose.isValidObjectId(google_item_id)) return res.status(400).json({ message: 'Invalid product ID' });
+      product = await GoogleAdsProduct.findById(google_item_id);
+      productType = 'google';
+      productModelType = 'GoogleAdsProduct';
+    } else {
+      return res.status(400).json({ message: 'Укажите товар предзаказа (google_item_id или youtube_item_id)' });
+    }
+
+    if (!product) return res.status(404).json({ message: 'Товар не найден' });
+    if (!name || !telegram || desired_quantity === undefined || desired_quantity === null) {
+      return res.status(400).json({ message: 'Обязательные поля: name, telegram, desired_quantity' });
+    }
+
+    const geoCode = String(geo || '').trim().toUpperCase();
+    if (!geoCode || !isValidGeo(geoCode)) return res.status(400).json({ message: 'Выберите гео для предзаказа' });
+
+    const productGeoCodes = (product.geos || []).map(g => g.code);
+    if (productGeoCodes.length && !productGeoCodes.includes(geoCode)) {
+      return res.status(400).json({ message: `Гео ${geoCode} недоступно для этого товара` });
+    }
+
+    const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10) || 1));
+    const unitPrice = parseFloat(Number(product.price) || 0);
+    if (unitPrice <= 0) return res.status(400).json({ message: 'Предзаказ этого товара временно недоступен' });
+
+    const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
+    const productTitleRu = product.title?.ru || product.title?.en || String(product._id);
+    const productTitleEn = product.title?.en || product.title?.ru || String(product._id);
+
+    const invoiceDoc = await CryptoCloudInvoice.create({
+      customerId: req.customer._id,
+      amount: totalAmount,
+      currency: 'USD',
+      status: 'created',
+      intent: 'preorder',
+      intentPayload: {
+        productId: String(product._id),
+        productType,
+        productModelType,
+        productTitleRu,
+        productTitleEn,
+        name: String(name).trim().slice(0, 200),
+        telegram: String(telegram).trim().slice(0, 100),
+        desired_quantity: qty,
+        comment: comment ? String(comment).trim().slice(0, 1000) : '',
+        geo: geoCode,
+        unitPrice,
+        totalAmount
+      }
+    });
+
+    const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
+    if (!cc.ok) return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+
+    return res.status(201).json({
+      orderId: invoiceDoc.orderId,
+      uuid: cc.result.uuid,
+      amount: totalAmount,
+      currency: 'USD',
+      link: cc.result.link,
+      expiry: cc.result.expiry_date
+    });
+  } catch (e) {
+    err('checkoutPreorder error:', e.message);
+    return res.status(400).json({ message: e.message || 'Checkout error' });
+  }
+};
+
 export const listMyInvoices = async (req, res) => {
   try {
     const invoices = await CryptoCloudInvoice.find({ customerId: req.customer._id })
@@ -565,6 +650,68 @@ async function fulfillService(invoice) {
   });
 }
 
+async function fulfillPreorder(invoice) {
+  const p = invoice.intentPayload || {};
+  if (!p.productId) { warn('fulfillPreorder: no productId', invoice.orderId); return; }
+
+  const totalAmount = parseFloat(
+    (Number(p.totalAmount) || (Number(p.unitPrice) * Number(p.desired_quantity))).toFixed(2)
+  );
+
+  const preorder = await Preorder.create({
+    google_item_id: p.productType === 'google' ? p.productId : null,
+    youtube_item_id: p.productType === 'youtube' ? p.productId : null,
+    productType: p.productType,
+    customerId: invoice.customerId,
+    geo: p.geo,
+    name: p.name,
+    telegram: p.telegram,
+    desired_quantity: p.desired_quantity,
+    comment: p.comment || '',
+    unitPriceSnapshot: p.unitPrice,
+    amountPaid: totalAmount,
+    currency: 'USD',
+    paymentMethod: 'cryptocloud',
+    paymentStatus: 'paid'
+  });
+
+  const tx = await Transaction.create({
+    userId: invoice.customerId,
+    type: 'preorder',
+    status: 'success',
+    amount: -totalAmount,
+    currency: 'USD',
+    note: `Preorder ${preorder.uid} x${p.desired_quantity} (CryptoCloud ${invoice.orderId})`
+  });
+  await Preorder.updateOne({ _id: preorder._id }, { paymentTransactionUid: tx.uid });
+  invoice.transactionUid = tx.uid;
+
+  const customer = await CustomerUser.findById(invoice.customerId);
+
+  const notif = await Notification.create({
+    userId: invoice.customerId,
+    type: 'preorder_status',
+    title: { ru: 'Предзаказ оплачен', en: 'Preorder paid' },
+    message: {
+      ru: `Предзаказ ${preorder.uid} оплачен через CryptoCloud`,
+      en: `Preorder ${preorder.uid} paid via CryptoCloud`
+    },
+    link: `/profile/preorders?search=${preorder.uid}`
+  });
+  io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
+    id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
+  });
+
+  createAdminNotif({
+    category: 'order_preorder',
+    type: 'order_preorder',
+    title: 'Новый предзаказ (CryptoCloud)',
+    message: `${customer?.username || customer?.email || invoice.customerId} оплатил предзаказ «${p.productTitleRu}» (${p.desired_quantity} шт.) — ${preorder.uid} — $${totalAmount.toFixed(2)}`,
+    link: `/preorders?search=${encodeURIComponent(preorder.uid)}`,
+    meta: { preorderId: preorder._id, uid: preorder.uid, amount: totalAmount, ccInvoice: invoice.orderId }
+  });
+}
+
 async function rollbackInvoice(invoice) {
   if (invoice.intent === 'product' || invoice.intent === 'cart') {
     const items = invoice.intentPayload?.items || [];
@@ -669,6 +816,8 @@ export const handlePostback = async (req, res) => {
           await fulfillProductsOrCart(invoice);
         } else if (invoice.intent === 'service') {
           await fulfillService(invoice);
+        } else if (invoice.intent === 'preorder') {
+          await fulfillPreorder(invoice);
         }
         invoice.fulfilledAt = new Date();
       } catch (e) {
@@ -699,6 +848,7 @@ export const debugPing = async (req, res) => {
       checkoutProduct: 'POST /api/v3/cryptocloud/checkout/product (auth)',
       checkoutCart: 'POST /api/v3/cryptocloud/checkout/cart (auth)',
       checkoutService: 'POST /api/v3/cryptocloud/checkout/service (auth, multipart)',
+      checkoutPreorder: 'POST /api/v3/cryptocloud/checkout/preorder (auth)',
       myInvoices: 'GET /api/v3/cryptocloud/my-invoices (auth)',
       postback: 'POST /api/v3/cryptocloud/postback (public)',
       ping: 'GET /api/v3/cryptocloud/ping (public)'
