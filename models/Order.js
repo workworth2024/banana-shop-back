@@ -67,7 +67,7 @@ const orderSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['balance', 'crypto'],
+    enum: ['balance', 'crypto', 'cryptocloud'],
     default: 'balance'
   },
   status: {

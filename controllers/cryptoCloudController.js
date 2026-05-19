@@ -1,10 +1,20 @@
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import CryptoCloudInvoice from '../models/CryptoCloudInvoice.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
+import DigitalItem from '../models/DigitalItem.js';
+import Order from '../models/Order.js';
+import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
+import YoutubeProduct from '../models/YoutubeProduct.js';
+import Service from '../models/Service.js';
+import ServiceOrder from '../models/ServiceOrder.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
+import { bunnyUpload, generateFilename } from '../utils/bunnyStorage.js';
+import { deleteAnyFile } from '../utils/deleteFile.js';
+import { isValidGeo } from '../utils/geos.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -12,11 +22,91 @@ const getShopId = () => process.env.CRYPTOCLOUD_SHOP_ID;
 const getSecret = () => process.env.CRYPTOCLOUD_SECRET;
 
 const PAID_STATUSES = new Set(['paid', 'overpaid', 'partial']);
+const FAILED_STATUSES = new Set(['canceled', 'failed']);
 
 const isDebug = () => process.env.CRYPTOCLOUD_DEBUG !== '0';
 const log = (...args) => { if (isDebug()) console.log('[CryptoCloud]', ...args); };
 const warn = (...args) => console.warn('[CryptoCloud]', ...args);
 const err = (...args) => console.error('[CryptoCloud]', ...args);
+
+const getProductModel = (productType) => {
+  if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
+  if (productType === 'YoutubeProduct') return YoutubeProduct;
+  return null;
+};
+
+const syncProductCounts = async (productId, productType) => {
+  const ProductModel = getProductModel(productType);
+  if (!ProductModel) return;
+  const product = await ProductModel.findById(productId).select('geos');
+  if (!product) return;
+  const geos = Array.isArray(product.geos) ? product.geos.map(g => g.code) : [];
+  const updatedGeos = [];
+  for (const code of geos) {
+    const c = await DigitalItem.countDocuments({ productId, productType, geo: code, status: 'available' });
+    updatedGeos.push({ code, counts: c });
+  }
+  const total = updatedGeos.reduce((s, g) => s + g.counts, 0);
+  await ProductModel.findByIdAndUpdate(productId, { geos: updatedGeos, counts: total });
+};
+
+const releaseReservations = async (reservedIds) => {
+  if (!reservedIds || !reservedIds.length) return;
+  try {
+    await DigitalItem.updateMany(
+      { _id: { $in: reservedIds }, status: 'reserved' },
+      { $set: { status: 'available', orderId: null } }
+    );
+  } catch (e) {
+    err('releaseReservations failed:', e.message);
+  }
+};
+
+async function requestCryptoCloudInvoice(invoiceDoc, customer, { ttlMinutes = 60 } = {}) {
+  const body = {
+    shop_id: getShopId(),
+    amount: invoiceDoc.amount,
+    currency: 'USD',
+    order_id: invoiceDoc.orderId,
+    email: customer?.email || undefined,
+    add_fields: {
+      time_to_pay: { hours: Math.floor(ttlMinutes / 60), minutes: ttlMinutes % 60 }
+    }
+  };
+
+  const ccRes = await fetch(`${getApiUrl()}/v2/invoice/create`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Token ${getApiKey()}`
+    },
+    body: JSON.stringify(body)
+  });
+
+  const ccData = await ccRes.json().catch(() => ({}));
+  log('CC invoice', invoiceDoc.intent, { http: ccRes.status, status: ccData?.status, link: !!ccData?.result?.link });
+
+  if (!ccRes.ok || ccData?.status !== 'success' || !ccData?.result?.link) {
+    await CryptoCloudInvoice.updateOne({ _id: invoiceDoc._id }, { $set: { status: 'failed', rawResponse: ccData } });
+    err('create invoice failed:', JSON.stringify(ccData));
+    return { ok: false, data: ccData };
+  }
+
+  const result = ccData.result;
+  await CryptoCloudInvoice.updateOne(
+    { _id: invoiceDoc._id },
+    {
+      $set: {
+        uuid: result.uuid || '',
+        payLink: result.link || '',
+        address: result.address || '',
+        rawResponse: result
+      }
+    }
+  );
+
+  return { ok: true, result };
+}
 
 export const createTopupInvoice = async (req, res) => {
   try {
@@ -36,72 +126,248 @@ export const createTopupInvoice = async (req, res) => {
       customerId: customer._id,
       amount: roundedAmount,
       currency: 'USD',
-      status: 'created'
+      status: 'created',
+      intent: 'topup'
     });
 
-    log('createTopupInvoice: db invoice created', {
-      orderId: invoiceDoc.orderId,
-      customerId: String(customer._id),
-      email: customer.email,
-      amount: roundedAmount
-    });
-
-    const body = {
-      shop_id: getShopId(),
-      amount: roundedAmount,
-      currency: 'USD',
-      order_id: invoiceDoc.orderId,
-      email: customer.email || undefined,
-      add_fields: {
-        time_to_pay: { hours: 1, minutes: 0 }
-      }
-    };
-
-    const ccRes = await fetch(`${getApiUrl()}/v2/invoice/create`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Token ${getApiKey()}`
-      },
-      body: JSON.stringify(body)
-    });
-
-    const ccData = await ccRes.json().catch(() => ({}));
-    log('createTopupInvoice: CC response', { http: ccRes.status, status: ccData?.status, hasLink: !!ccData?.result?.link });
-    if (!ccRes.ok || ccData?.status !== 'success' || !ccData?.result?.link) {
-      await CryptoCloudInvoice.updateOne(
-        { _id: invoiceDoc._id },
-        { $set: { status: 'failed', rawResponse: ccData } }
-      );
-      err('create invoice failed:', JSON.stringify(ccData));
-      return res.status(502).json({ message: 'Failed to create payment invoice', details: ccData });
-    }
-
-    const result = ccData.result;
-    log('createTopupInvoice: invoice ready', { uuid: result.uuid, link: result.link, expiry: result.expiry_date });
-    await CryptoCloudInvoice.updateOne(
-      { _id: invoiceDoc._id },
-      {
-        $set: {
-          uuid: result.uuid || '',
-          payLink: result.link || '',
-          address: result.address || '',
-          rawResponse: result
-        }
-      }
-    );
+    const cc = await requestCryptoCloudInvoice(invoiceDoc, customer, { ttlMinutes: 60 });
+    if (!cc.ok) return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
 
     return res.status(201).json({
       orderId: invoiceDoc.orderId,
-      uuid: result.uuid,
+      uuid: cc.result.uuid,
       amount: roundedAmount,
       currency: 'USD',
-      link: result.link,
-      expiry: result.expiry_date
+      link: cc.result.link,
+      expiry: cc.result.expiry_date
     });
   } catch (e) {
     err('createTopupInvoice error:', e);
     return res.status(500).json({ message: 'Server error', error: e?.message });
+  }
+};
+
+async function reserveItemsForRequest(items, customerId) {
+  const reserved = [];
+  const enrichedItems = [];
+  try {
+    for (const it of items) {
+      const productId = it.productId;
+      const productType = it.productType;
+      const geoCode = String(it.geo || '').trim().toUpperCase();
+      const qty = Math.max(1, Math.min(50, parseInt(it.quantity, 10) || 1));
+
+      if (!mongoose.isValidObjectId(productId)) throw new Error('Invalid product ID');
+      const ProductModel = getProductModel(productType);
+      if (!ProductModel) throw new Error('Invalid product type');
+      if (!geoCode || !isValidGeo(geoCode)) throw new Error('Geo is required');
+
+      const product = await ProductModel.findById(productId);
+      if (!product) throw new Error('Product not found');
+      const productGeoCodes = (product.geos || []).map(g => g.code);
+      if (!productGeoCodes.includes(geoCode)) throw new Error(`Geo ${geoCode} is not available`);
+
+      const reservedIds = [];
+      for (let i = 0; i < qty; i++) {
+        const di = await DigitalItem.findOneAndUpdate(
+          { productId, productType, geo: geoCode, status: 'available' },
+          { $set: { status: 'reserved' } },
+          { returnDocument: 'after' }
+        );
+        if (!di) throw new Error(`Only ${reservedIds.length} items available for ${geoCode}`);
+        reservedIds.push(di._id);
+        reserved.push(di._id);
+      }
+
+      const titleRu = product.title?.ru || product.title?.en || product.name || '';
+      const titleEn = product.title?.en || product.title?.ru || product.name || '';
+      const descStr = product.desc?.ru || product.desc?.en || '';
+      const unitPrice = parseFloat(Number(product.price) || 0);
+
+      enrichedItems.push({
+        productId: String(productId),
+        productType,
+        geo: geoCode,
+        quantity: qty,
+        unitPrice,
+        amount: parseFloat((unitPrice * qty).toFixed(2)),
+        reservedIds: reservedIds.map(String),
+        titleRu,
+        titleEn,
+        descStr,
+        productImage: product.path_image || product.image || '',
+        productSubType: product.type || ''
+      });
+    }
+    return { enrichedItems };
+  } catch (e) {
+    await releaseReservations(reserved);
+    throw e;
+  }
+}
+
+export const checkoutProduct = async (req, res) => {
+  try {
+    if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
+
+    const { productId, productType, quantity = 1, geo } = req.body;
+    const { enrichedItems } = await reserveItemsForRequest(
+      [{ productId, productType, quantity, geo }],
+      req.customer._id
+    );
+
+    const totalAmount = parseFloat(enrichedItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
+
+    const invoiceDoc = await CryptoCloudInvoice.create({
+      customerId: req.customer._id,
+      amount: totalAmount,
+      currency: 'USD',
+      status: 'created',
+      intent: 'product',
+      intentPayload: { items: enrichedItems }
+    });
+
+    const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
+    if (!cc.ok) {
+      await releaseReservations(enrichedItems.flatMap(i => i.reservedIds));
+      return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+    }
+
+    return res.status(201).json({
+      orderId: invoiceDoc.orderId,
+      uuid: cc.result.uuid,
+      amount: totalAmount,
+      currency: 'USD',
+      link: cc.result.link,
+      expiry: cc.result.expiry_date
+    });
+  } catch (e) {
+    err('checkoutProduct error:', e.message);
+    return res.status(400).json({ message: e.message || 'Checkout error' });
+  }
+};
+
+export const checkoutCart = async (req, res) => {
+  try {
+    if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
+
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    if (!items.length) return res.status(400).json({ message: 'No items' });
+
+    const { enrichedItems } = await reserveItemsForRequest(items, req.customer._id);
+    const totalAmount = parseFloat(enrichedItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
+
+    const invoiceDoc = await CryptoCloudInvoice.create({
+      customerId: req.customer._id,
+      amount: totalAmount,
+      currency: 'USD',
+      status: 'created',
+      intent: 'cart',
+      intentPayload: { items: enrichedItems }
+    });
+
+    const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
+    if (!cc.ok) {
+      await releaseReservations(enrichedItems.flatMap(i => i.reservedIds));
+      return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+    }
+
+    return res.status(201).json({
+      orderId: invoiceDoc.orderId,
+      uuid: cc.result.uuid,
+      amount: totalAmount,
+      currency: 'USD',
+      link: cc.result.link,
+      expiry: cc.result.expiry_date
+    });
+  } catch (e) {
+    err('checkoutCart error:', e.message);
+    return res.status(400).json({ message: e.message || 'Checkout error' });
+  }
+};
+
+export const checkoutService = async (req, res) => {
+  const customerId = req.customer._id;
+  let serviceOrderId = null;
+  const uploadedFiles = [];
+  try {
+    if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
+
+    const { serviceId, responses } = req.body;
+    if (!serviceId) return res.status(400).json({ message: 'serviceId required' });
+
+    const service = await Service.findById(serviceId);
+    if (!service) return res.status(404).json({ message: 'Service not found' });
+
+    const chargeAmount = parseFloat(Number(service.price) || 0);
+    if (chargeAmount <= 0) return res.status(400).json({ message: 'Стоимость услуги не задана' });
+
+    let parsedResponses;
+    try {
+      parsedResponses = typeof responses === 'string' ? JSON.parse(responses || '[]') : (responses || []);
+      if (!Array.isArray(parsedResponses)) parsedResponses = [];
+    } catch {
+      return res.status(400).json({ message: 'Некорректный формат ответов' });
+    }
+
+    for (const f of (req.files || [])) {
+      const filename = generateFilename(f.originalname);
+      const remotePath = `/service-orders/${filename}`;
+      await bunnyUpload(remotePath, f.buffer, f.mimetype);
+      uploadedFiles.push({
+        path: remotePath,
+        originalName: f.originalname,
+        size: f.size,
+        stepId: f.fieldname?.startsWith('step_') ? f.fieldname.replace('step_', '') : null
+      });
+    }
+
+    const serviceTitle = service.title?.ru || service.title?.en || String(serviceId);
+
+    const order = await ServiceOrder.create({
+      customerId,
+      serviceId,
+      scenarioId: service.scenarioId || null,
+      serviceSnapshot: { title: serviceTitle, price: chargeAmount },
+      amountPaid: chargeAmount,
+      currency: 'USD',
+      paymentMethod: 'cryptocloud',
+      paymentStatus: 'pending_payment',
+      responses: parsedResponses,
+      customerFiles: uploadedFiles
+    });
+    serviceOrderId = order._id;
+
+    const invoiceDoc = await CryptoCloudInvoice.create({
+      customerId,
+      amount: chargeAmount,
+      currency: 'USD',
+      status: 'created',
+      intent: 'service',
+      intentPayload: { serviceOrderId: String(order._id) }
+    });
+
+    const cc = await requestCryptoCloudInvoice(invoiceDoc, req.customer, { ttlMinutes: 60 });
+    if (!cc.ok) {
+      await ServiceOrder.findByIdAndDelete(order._id).catch(() => {});
+      for (const cf of uploadedFiles) { if (cf.path) deleteAnyFile(cf.path); }
+      return res.status(502).json({ message: 'Failed to create payment invoice', details: cc.data });
+    }
+
+    return res.status(201).json({
+      orderId: invoiceDoc.orderId,
+      uuid: cc.result.uuid,
+      serviceOrderUid: order.uid,
+      amount: chargeAmount,
+      currency: 'USD',
+      link: cc.result.link,
+      expiry: cc.result.expiry_date
+    });
+  } catch (e) {
+    if (serviceOrderId) await ServiceOrder.findByIdAndDelete(serviceOrderId).catch(() => {});
+    for (const cf of uploadedFiles) { if (cf.path) deleteAnyFile(cf.path); }
+    err('checkoutService error:', e);
+    return res.status(500).json({ message: e.message || 'Server error' });
   }
 };
 
@@ -110,7 +376,7 @@ export const listMyInvoices = async (req, res) => {
     const invoices = await CryptoCloudInvoice.find({ customerId: req.customer._id })
       .sort({ createdAt: -1 })
       .limit(50)
-      .select('orderId uuid amount currency status amountPaidUsd payLink paidAt createdAt');
+      .select('orderId uuid amount currency status intent amountPaidUsd payLink paidAt createdAt');
     return res.json({ invoices });
   } catch (e) {
     console.error('[CryptoCloud] listMyInvoices error:', e);
@@ -118,22 +384,217 @@ export const listMyInvoices = async (req, res) => {
   }
 };
 
+async function fulfillTopup(invoice, creditAmount) {
+  const customer = await CustomerUser.findByIdAndUpdate(
+    invoice.customerId,
+    { $inc: { balance: creditAmount } },
+    { returnDocument: 'after' }
+  );
+
+  const tx = await Transaction.create({
+    userId: invoice.customerId,
+    type: 'deposit_cash',
+    status: 'success',
+    amount: creditAmount,
+    currency: 'USD',
+    note: `CryptoCloud · ${invoice.orderId}${invoice.uuid ? ` · ${invoice.uuid}` : ''}`
+  });
+  invoice.transactionUid = tx.uid;
+
+  if (customer) {
+    io.of('/customer').to(`customer:${customer._id}`).emit('balance_updated', { balance: customer.balance });
+
+    const notif = await Notification.create({
+      userId: customer._id,
+      type: 'balance_updated',
+      title: { ru: 'Баланс пополнен', en: 'Balance topped up' },
+      message: {
+        ru: `Пополнение через CryptoCloud: +$${creditAmount.toFixed(2)}`,
+        en: `CryptoCloud top-up: +$${creditAmount.toFixed(2)}`
+      },
+      link: '/profile/wallet'
+    });
+
+    io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
+      id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
+    });
+
+    createAdminNotif({
+      category: 'transaction',
+      type: 'transaction_deposit',
+      title: 'Пополнение баланса',
+      message: `${customer.username || customer.email || customer._id} пополнил баланс через CryptoCloud — $${creditAmount.toFixed(2)} (${invoice.orderId})`,
+      link: `/transactions?search=${encodeURIComponent(tx.uid)}`,
+      meta: { customerId: customer._id, amount: creditAmount, orderId: invoice.orderId, uuid: invoice.uuid }
+    });
+  }
+}
+
+async function fulfillProductsOrCart(invoice) {
+  const items = invoice.intentPayload?.items || [];
+  if (!items.length) { warn('fulfillProductsOrCart: no items in payload', invoice.orderId); return; }
+
+  const customer = await CustomerUser.findById(invoice.customerId);
+  const createdOrders = [];
+
+  for (const it of items) {
+    const reservedIds = (it.reservedIds || []).map(id => new mongoose.Types.ObjectId(id));
+    const totalAmount = parseFloat((it.unitPrice * it.quantity).toFixed(2));
+
+    const order = await Order.create({
+      customerId: invoice.customerId,
+      productId: it.productId,
+      productType: it.productType,
+      geo: it.geo,
+      digitalItemId: reservedIds[0],
+      digitalItemIds: reservedIds,
+      quantity: it.quantity,
+      productSnapshot: {
+        title: it.titleRu,
+        description: it.descStr,
+        productType: it.productType,
+        productSubType: it.productSubType || '',
+        price: it.unitPrice,
+        image: it.productImage || '',
+        geo: it.geo
+      },
+      amount: totalAmount,
+      currency: 'USD',
+      paymentMethod: 'cryptocloud',
+      status: 'delivered',
+      paidAt: new Date(),
+      deliveredAt: new Date()
+    });
+
+    await DigitalItem.updateMany(
+      { _id: { $in: reservedIds } },
+      { $set: { status: 'sold', orderId: order._id } }
+    );
+
+    await Transaction.create({
+      userId: invoice.customerId,
+      type: 'order',
+      status: 'success',
+      amount: -totalAmount,
+      currency: 'USD',
+      note: `Order ${order.uid} x${it.quantity} (CryptoCloud ${invoice.orderId})`
+    });
+
+    await syncProductCounts(it.productId, it.productType);
+
+    const notif = await Notification.create({
+      userId: invoice.customerId,
+      type: 'order_delivered',
+      title: { ru: 'Товар доставлен', en: 'Product delivered' },
+      message: {
+        ru: `Вы приобрели: ${it.titleRu}${it.quantity > 1 ? ` (x${it.quantity})` : ''}`,
+        en: `You purchased: ${it.titleEn}${it.quantity > 1 ? ` (x${it.quantity})` : ''}`
+      },
+      link: `/profile/orders?search=${order.uid}`
+    });
+
+    io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
+      id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
+    });
+
+    createAdminNotif({
+      category: 'order',
+      type: 'order_product',
+      title: 'Новая покупка (CryptoCloud)',
+      message: `${customer?.username || customer?.email || invoice.customerId} купил: ${it.titleRu}${it.quantity > 1 ? ` (x${it.quantity})` : ''} — $${totalAmount.toFixed(2)}`,
+      link: `/orders?search=${encodeURIComponent(order.uid)}`,
+      meta: { customerId: invoice.customerId, orderId: order._id, amount: totalAmount, orderUid: order.uid, ccInvoice: invoice.orderId }
+    });
+
+    createdOrders.push(order.uid);
+  }
+
+  // mark invoice transactionUid with first one for reference
+  if (createdOrders.length) invoice.transactionUid = createdOrders[0];
+}
+
+async function fulfillService(invoice) {
+  const soId = invoice.intentPayload?.serviceOrderId;
+  if (!soId) { warn('fulfillService: no serviceOrderId', invoice.orderId); return; }
+
+  const order = await ServiceOrder.findById(soId);
+  if (!order) { warn('fulfillService: ServiceOrder not found', soId); return; }
+  if (order.paymentStatus === 'paid') return;
+
+  const chargeAmount = parseFloat(Number(order.amountPaid) || 0);
+
+  const tx = await Transaction.create({
+    userId: invoice.customerId,
+    type: 'service_order',
+    status: 'success',
+    amount: -chargeAmount,
+    currency: 'USD',
+    note: `Service ${order.uid} (CryptoCloud ${invoice.orderId})`
+  });
+
+  order.paymentStatus = 'paid';
+  order.paymentTransactionUid = tx.uid;
+  await order.save();
+
+  invoice.transactionUid = tx.uid;
+
+  const customer = await CustomerUser.findById(invoice.customerId);
+  const serviceTitle = order.serviceSnapshot?.title || String(order.serviceId);
+
+  const notif = await Notification.create({
+    userId: invoice.customerId,
+    type: 'service_order_paid',
+    title: { ru: 'Заявка на услугу оплачена', en: 'Service order paid' },
+    message: {
+      ru: `Заявка ${order.uid} оплачена через CryptoCloud`,
+      en: `Order ${order.uid} paid via CryptoCloud`
+    },
+    link: `/profile/service-orders?search=${order.uid}`
+  });
+  io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
+    id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
+  });
+
+  createAdminNotif({
+    category: 'order_service',
+    type: 'order_service',
+    title: 'Новая заявка на услугу (CryptoCloud)',
+    message: `${customer?.username || customer?.email || invoice.customerId} оплатил заявку «${serviceTitle}» — ${order.uid} — $${chargeAmount.toFixed(2)}`,
+    link: `/service-orders?search=${encodeURIComponent(order.uid)}`,
+    meta: { orderId: order._id, uid: order.uid, amount: chargeAmount, ccInvoice: invoice.orderId }
+  });
+}
+
+async function rollbackInvoice(invoice) {
+  if (invoice.intent === 'product' || invoice.intent === 'cart') {
+    const items = invoice.intentPayload?.items || [];
+    const ids = items.flatMap(i => (i.reservedIds || []).map(id => new mongoose.Types.ObjectId(id)));
+    await releaseReservations(ids);
+    log('rollback: released reservations', { invoice: invoice.orderId, count: ids.length });
+  } else if (invoice.intent === 'service') {
+    const soId = invoice.intentPayload?.serviceOrderId;
+    if (soId) {
+      const so = await ServiceOrder.findById(soId);
+      if (so && so.paymentStatus === 'pending_payment') {
+        for (const cf of (so.customerFiles || [])) {
+          if (cf.path) deleteAnyFile(cf.path);
+        }
+        await ServiceOrder.findByIdAndDelete(soId).catch(() => {});
+        log('rollback: deleted pending service order', soId);
+      }
+    }
+  }
+}
+
 export const handlePostback = async (req, res) => {
   const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress;
   const ct = req.headers['content-type'] || '';
   try {
     const body = req.body || {};
     log('postback received', {
-      ip,
-      contentType: ct,
-      keys: Object.keys(body),
-      status: body.status,
-      invoice_id: body.invoice_id,
-      order_id: body.order_id,
-      currency: body.currency,
-      amount_crypto: body.amount_crypto,
-      hasToken: !!body.token,
-      bodySize: JSON.stringify(body).length
+      ip, contentType: ct, keys: Object.keys(body),
+      status: body.status, invoice_id: body.invoice_id, order_id: body.order_id,
+      hasToken: !!body.token
     });
 
     const status = String(body.status || '');
@@ -148,23 +609,21 @@ export const handlePostback = async (req, res) => {
 
     const secret = getSecret();
     if (!secret) {
-      err('postback REJECTED: CRYPTOCLOUD_SECRET is not configured on the server');
+      err('postback REJECTED: CRYPTOCLOUD_SECRET is not configured');
       return res.status(500).json({ message: 'Server misconfigured: secret missing' });
     }
     if (!token) {
-      err('postback REJECTED: missing JWT token in payload', { ip, invoiceId, orderId });
+      err('postback REJECTED: missing JWT token', { ip, invoiceId, orderId });
       return res.status(401).json({ message: 'Missing signature token' });
     }
     let decoded;
     try {
       decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
-      log('postback: JWT verified', decoded);
     } catch (e) {
       err('postback REJECTED: JWT invalid', { ip, invoiceId, orderId, reason: e.message });
       return res.status(401).json({ message: 'Invalid signature' });
     }
 
-    // Optional payload binding: if JWT carries id/invoice_id, ensure it matches the body
     const tokenInvoiceId = decoded?.id != null ? String(decoded.id) : (decoded?.invoice_id != null ? String(decoded.invoice_id) : '');
     if (tokenInvoiceId && invoiceId && tokenInvoiceId !== invoiceId && tokenInvoiceId !== `INV-${invoiceId}`) {
       err('postback REJECTED: token invoice id mismatch', { tokenInvoiceId, invoiceId });
@@ -184,10 +643,9 @@ export const handlePostback = async (req, res) => {
       err('postback: invoice not found', { invoiceId, orderId });
       return res.status(404).json({ message: 'Invoice not found' });
     }
-    log('postback: invoice matched', { dbId: String(invoice._id), orderId: invoice.orderId, currentStatus: invoice.status, customerId: String(invoice.customerId) });
 
     if (invoice.status === 'paid' || invoice.status === 'overpaid' || invoice.status === 'partial') {
-      log('postback: already processed, skipping', { orderId: invoice.orderId, status: invoice.status });
+      log('postback: already processed', { orderId: invoice.orderId });
       return res.status(200).json({ message: 'Already processed' });
     }
 
@@ -199,68 +657,29 @@ export const handlePostback = async (req, res) => {
     invoice.rawPostback = body;
     if (amountPaidUsd > 0) invoice.amountPaidUsd = amountPaidUsd;
 
-    log('postback: status decision', { innerStatus, topStatus: status, newStatus, amountPaidUsd });
+    log('postback: decision', { intent: invoice.intent, newStatus, amountPaidUsd });
 
     if (PAID_STATUSES.has(newStatus)) {
-      const creditAmount = parseFloat((amountPaidUsd > 0 ? amountPaidUsd : invoice.amount).toFixed(2));
       invoice.paidAt = new Date();
-      log('postback: crediting balance', { customerId: String(invoice.customerId), creditAmount });
-
-      const customer = await CustomerUser.findByIdAndUpdate(
-        invoice.customerId,
-        { $inc: { balance: creditAmount } },
-        { returnDocument: 'after' }
-      );
-
-      const tx = await Transaction.create({
-        userId: invoice.customerId,
-        type: 'deposit_cash',
-        status: 'success',
-        amount: creditAmount,
-        currency: 'USD',
-        note: `CryptoCloud · ${invoice.orderId}${invoice.uuid ? ` · ${invoice.uuid}` : ''}`
-      });
-      invoice.transactionUid = tx.uid;
-      await invoice.save();
-      log('postback: transaction created', { txUid: tx.uid, newBalance: customer?.balance });
-
-      if (customer) {
-        io.of('/customer').to(`customer:${customer._id}`).emit('balance_updated', {
-          balance: customer.balance
-        });
-
-        const notif = await Notification.create({
-          userId: customer._id,
-          type: 'balance_updated',
-          title: { ru: 'Баланс пополнен', en: 'Balance topped up' },
-          message: {
-            ru: `Пополнение через CryptoCloud: +$${creditAmount.toFixed(2)}`,
-            en: `CryptoCloud top-up: +$${creditAmount.toFixed(2)}`
-          },
-          link: '/profile/wallet'
-        });
-
-        io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
-          id: notif._id,
-          type: notif.type,
-          title: notif.title,
-          message: notif.message,
-          link: notif.link,
-          createdAt: notif.createdAt
-        });
-
-        createAdminNotif({
-          category: 'transaction',
-          type: 'transaction_deposit',
-          title: 'Пополнение баланса',
-          message: `${customer.username || customer.email || customer._id} пополнил баланс через CryptoCloud — $${creditAmount.toFixed(2)} (${invoice.orderId})`,
-          link: `/transactions?search=${encodeURIComponent(tx.uid)}`,
-          meta: { customerId: customer._id, amount: creditAmount, orderId: invoice.orderId, uuid: invoice.uuid }
-        });
+      try {
+        if (invoice.intent === 'topup') {
+          const creditAmount = parseFloat((amountPaidUsd > 0 ? amountPaidUsd : invoice.amount).toFixed(2));
+          await fulfillTopup(invoice, creditAmount);
+        } else if (invoice.intent === 'product' || invoice.intent === 'cart') {
+          await fulfillProductsOrCart(invoice);
+        } else if (invoice.intent === 'service') {
+          await fulfillService(invoice);
+        }
+        invoice.fulfilledAt = new Date();
+      } catch (e) {
+        err('fulfillment error:', e);
       }
+      await invoice.save();
+    } else if (FAILED_STATUSES.has(newStatus)) {
+      await invoice.save();
+      await rollbackInvoice(invoice);
     } else {
       await invoice.save();
-      log('postback: non-paid status saved', { orderId: invoice.orderId, status: newStatus });
     }
 
     return res.status(200).json({ message: 'Postback received', orderId: invoice.orderId, status: invoice.status });
@@ -271,13 +690,15 @@ export const handlePostback = async (req, res) => {
 };
 
 export const debugPing = async (req, res) => {
-  log('debugPing called', { ip: req.headers['x-forwarded-for'] || req.ip, ua: req.headers['user-agent'] });
   return res.json({
     ok: true,
     time: new Date().toISOString(),
     configured: { apiKey: !!getApiKey(), shopId: !!getShopId(), secret: !!getSecret(), apiUrl: getApiUrl() },
     endpoints: {
       topup: 'POST /api/v3/cryptocloud/topup (auth)',
+      checkoutProduct: 'POST /api/v3/cryptocloud/checkout/product (auth)',
+      checkoutCart: 'POST /api/v3/cryptocloud/checkout/cart (auth)',
+      checkoutService: 'POST /api/v3/cryptocloud/checkout/service (auth, multipart)',
       myInvoices: 'GET /api/v3/cryptocloud/my-invoices (auth)',
       postback: 'POST /api/v3/cryptocloud/postback (public)',
       ping: 'GET /api/v3/cryptocloud/ping (public)'

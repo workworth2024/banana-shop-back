@@ -44,7 +44,7 @@ const serviceOrderSchema = new mongoose.Schema({
   paymentMethod: { type: String, default: '' },
   paymentStatus: {
     type: String,
-    enum: ['unpaid', 'paid'],
+    enum: ['unpaid', 'pending_payment', 'paid', 'cancelled'],
     default: 'unpaid'
   },
   paymentTransactionUid: { type: String, default: '' },

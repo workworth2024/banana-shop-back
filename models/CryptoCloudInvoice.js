@@ -41,6 +41,20 @@ const cryptoCloudInvoiceSchema = new mongoose.Schema({
     default: 'created',
     index: true
   },
+  intent: {
+    type: String,
+    enum: ['topup', 'product', 'cart', 'service'],
+    default: 'topup',
+    index: true
+  },
+  intentPayload: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null
+  },
+  fulfilledAt: {
+    type: Date,
+    default: null
+  },
   amountPaidUsd: {
     type: Number,
     default: 0
