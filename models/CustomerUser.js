@@ -35,12 +35,10 @@ const customerUserSchema = new mongoose.Schema({
     default: false
   },
   telegramId: {
-    type: String,
-    default: null
+    type: String
   },
   telegramUsername: {
     type: String,
-    default: null,
     trim: true
   },
   balance: {

@@ -12,6 +12,10 @@ import Currency from './models/Currency.js';
 import ReplaceRequest from './models/ReplaceRequest.js';
 import GoogleAdsProduct from './models/GoogleAdsProduct.js';
 import YoutubeProduct from './models/YoutubeProduct.js';
+import DigitalItem from './models/DigitalItem.js';
+import Order from './models/Order.js';
+import CryptoCloudInvoice from './models/CryptoCloudInvoice.js';
+import { syncManyProductCounts } from './utils/syncProductCounts.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -352,6 +356,80 @@ async function cleanOldReplacePhotos() {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 setInterval(cleanOldReplacePhotos, DAY_MS);
+
+async function releaseExpiredReservations() {
+  try {
+    const cutoff = new Date(Date.now() - 75 * 60 * 1000);
+
+    const expiredItems = await DigitalItem.find(
+      { status: 'reserved', updatedAt: { $lt: cutoff } },
+      { _id: 1 }
+    ).lean();
+
+    let releasedCount = 0;
+    let cancelledOrdersCount = 0;
+
+    if (expiredItems.length) {
+      const expiredIds = expiredItems.map(i => i._id);
+
+      const expiredItemDetails = await DigitalItem.find(
+        { _id: { $in: expiredIds } },
+        { productId: 1, productType: 1 }
+      ).lean();
+
+      await DigitalItem.updateMany(
+        { _id: { $in: expiredIds } },
+        { $set: { status: 'available', orderId: null } }
+      );
+
+      const cancelledOrders = await Order.updateMany(
+        {
+          $or: [
+            { digitalItemId: { $in: expiredIds } },
+            { digitalItemIds: { $elemMatch: { $in: expiredIds } } }
+          ],
+          status: 'unpaid',
+          paymentMethod: 'cryptocloud'
+        },
+        { $set: { status: 'cancelled' } }
+      );
+
+      await CryptoCloudInvoice.updateMany(
+        {
+          status: 'created',
+          'intentPayload.items': {
+            $elemMatch: { reservedIds: { $elemMatch: { $in: expiredIds.map(String) } } }
+          }
+        },
+        { $set: { status: 'canceled' } }
+      );
+
+      await syncManyProductCounts(expiredItemDetails).catch(() => {});
+
+      releasedCount = expiredIds.length;
+      cancelledOrdersCount = cancelledOrders.modifiedCount;
+    }
+
+    const staleInvoices = await CryptoCloudInvoice.updateMany(
+      { status: 'created', createdAt: { $lt: cutoff } },
+      { $set: { status: 'canceled' } }
+    );
+
+    const staleOrders = await Order.updateMany(
+      { status: 'unpaid', paymentMethod: 'cryptocloud', createdAt: { $lt: cutoff } },
+      { $set: { status: 'cancelled' } }
+    );
+
+    if (releasedCount || staleInvoices.modifiedCount || staleOrders.modifiedCount) {
+      console.log(`[cleanup] Released ${releasedCount} reserved items, cancelled ${cancelledOrdersCount + staleOrders.modifiedCount} CC orders, ${staleInvoices.modifiedCount} stale invoices`);
+    }
+  } catch (e) {
+    console.error('[cleanup] releaseExpiredReservations error:', e.message);
+  }
+}
+
+const QUARTER_HOUR_MS = 15 * 60 * 1000;
+setInterval(releaseExpiredReservations, QUARTER_HOUR_MS);
 
 // Routes
 import v2Routes from './routes/v2/index.js';

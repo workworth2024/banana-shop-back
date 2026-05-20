@@ -38,7 +38,7 @@ const preorderSchema = new mongoose.Schema({
   paymentMethod: { type: String, default: '' },
   paymentStatus: {
     type: String,
-    enum: ['unpaid', 'paid', 'cancelled'],
+    enum: ['unpaid', 'paid'],
     default: 'unpaid'
   },
   paymentTransactionUid: { type: String, default: '' },

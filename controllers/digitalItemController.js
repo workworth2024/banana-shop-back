@@ -14,27 +14,12 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDelete, bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { isValidGeo } from '../utils/geos.js';
+import { syncProductCounts } from '../utils/syncProductCounts.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
   if (productType === 'YoutubeProduct') return YoutubeProduct;
   return null;
-};
-
-const syncProductCounts = async (productId, productType) => {
-  const ProductModel = getProductModel(productType);
-  if (!ProductModel) return 0;
-  const product = await ProductModel.findById(productId).select('geos');
-  if (!product) return 0;
-  const geos = Array.isArray(product.geos) ? product.geos.map(g => g.code) : [];
-  const updatedGeos = [];
-  for (const code of geos) {
-    const c = await DigitalItem.countDocuments({ productId, productType, geo: code, status: 'available' });
-    updatedGeos.push({ code, counts: c });
-  }
-  const total = updatedGeos.reduce((s, g) => s + g.counts, 0);
-  await ProductModel.findByIdAndUpdate(productId, { geos: updatedGeos, counts: total });
-  return { total, geos: updatedGeos };
 };
 
 export const uploadDigitalItems = async (req, res) => {

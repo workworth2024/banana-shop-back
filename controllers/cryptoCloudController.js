@@ -16,6 +16,7 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, generateFilename } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { isValidGeo } from '../utils/geos.js';
+import { syncProductCounts, syncManyProductCounts } from '../utils/syncProductCounts.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -36,28 +37,18 @@ const getProductModel = (productType) => {
   return null;
 };
 
-const syncProductCounts = async (productId, productType) => {
-  const ProductModel = getProductModel(productType);
-  if (!ProductModel) return;
-  const product = await ProductModel.findById(productId).select('geos');
-  if (!product) return;
-  const geos = Array.isArray(product.geos) ? product.geos.map(g => g.code) : [];
-  const updatedGeos = [];
-  for (const code of geos) {
-    const c = await DigitalItem.countDocuments({ productId, productType, geo: code, status: 'available' });
-    updatedGeos.push({ code, counts: c });
-  }
-  const total = updatedGeos.reduce((s, g) => s + g.counts, 0);
-  await ProductModel.findByIdAndUpdate(productId, { geos: updatedGeos, counts: total });
-};
-
 const releaseReservations = async (reservedIds) => {
   if (!reservedIds || !reservedIds.length) return;
   try {
+    const items = await DigitalItem.find(
+      { _id: { $in: reservedIds }, status: 'reserved' },
+      { productId: 1, productType: 1 }
+    ).lean();
     await DigitalItem.updateMany(
       { _id: { $in: reservedIds }, status: 'reserved' },
       { $set: { status: 'available', orderId: null } }
     );
+    await syncManyProductCounts(items).catch(() => {});
   } catch (e) {
     err('releaseReservations failed:', e.message);
   }
@@ -199,6 +190,8 @@ async function reserveItemsForRequest(items, customerId) {
         productImage: product.path_image || product.image || '',
         productSubType: product.type || ''
       });
+
+      await syncProductCounts(productId, productType).catch(() => {});
     }
     return { enrichedItems };
   } catch (e) {
@@ -213,6 +206,27 @@ export const checkoutProduct = async (req, res) => {
     if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
 
     const { productId, productType, quantity = 1, geo } = req.body;
+    const geoCode = String(geo || '').trim().toUpperCase();
+    const since58min = new Date(Date.now() - 58 * 60 * 1000);
+    const existingOrder = await Order.findOne({
+      customerId: req.customer._id,
+      productId,
+      geo: geoCode,
+      status: 'unpaid',
+      paymentMethod: 'cryptocloud',
+      payLink: { $ne: '' },
+      createdAt: { $gte: since58min }
+    });
+    if (existingOrder?.payLink) {
+      log('checkoutProduct: returning existing invoice', existingOrder.uid);
+      return res.status(200).json({
+        orderId: existingOrder.ccInvoiceId || existingOrder.uid,
+        link: existingOrder.payLink,
+        amount: existingOrder.amount,
+        currency: 'USD',
+        existing: true
+      });
+    }
     const { enrichedItems } = await reserveItemsForRequest(
       [{ productId, productType, quantity, geo }],
       req.customer._id
@@ -290,6 +304,25 @@ export const checkoutCart = async (req, res) => {
 
     const items = Array.isArray(req.body.items) ? req.body.items : [];
     if (!items.length) return res.status(400).json({ message: 'No items' });
+
+    const since58min = new Date(Date.now() - 58 * 60 * 1000);
+    const existingInvoice = await CryptoCloudInvoice.findOne({
+      customerId: req.customer._id,
+      intent: 'cart',
+      status: 'created',
+      payLink: { $ne: '' },
+      createdAt: { $gte: since58min }
+    });
+    if (existingInvoice?.payLink) {
+      log('checkoutCart: returning existing invoice', existingInvoice.orderId);
+      return res.status(200).json({
+        orderId: existingInvoice.orderId,
+        link: existingInvoice.payLink,
+        amount: existingInvoice.amount,
+        currency: 'USD',
+        existing: true
+      });
+    }
 
     const { enrichedItems } = await reserveItemsForRequest(items, req.customer._id);
     const totalAmount = parseFloat(enrichedItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
@@ -854,7 +887,7 @@ async function rollbackInvoice(invoice) {
     if (preorderId && mongoose.isValidObjectId(preorderId)) {
       await Preorder.findOneAndUpdate(
         { _id: preorderId, paymentStatus: 'unpaid' },
-        { $set: { status: 'cancelled', paymentStatus: 'cancelled', payLink: '' } }
+        { $set: { status: 'cancelled', payLink: '' } }
       );
       log('rollback: cancelled pre-created preorder', preorderId);
     }

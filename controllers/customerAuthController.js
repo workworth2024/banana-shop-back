@@ -502,9 +502,12 @@ export const unlinkTelegram = async (req, res) => {
     if (!user.telegramId) {
       return res.status(400).json({ message: 'Telegram is not linked' });
     }
-    user.telegramId = null;
-    await user.save();
-    return res.status(200).json({ message: 'Telegram unlinked', user: safeUser(user) });
+    const updated = await CustomerUser.findByIdAndUpdate(
+      user._id,
+      { $unset: { telegramId: 1, telegramUsername: 1 } },
+      { returnDocument: 'after' }
+    );
+    return res.status(200).json({ message: 'Telegram unlinked', user: safeUser(updated) });
   } catch (error) {
     console.error('[CustomerAuth] unlinkTelegram error:', error);
     return res.status(500).json({ message: 'Server error' });
