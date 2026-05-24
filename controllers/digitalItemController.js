@@ -15,6 +15,7 @@ import { bunnyUpload, bunnyDelete, bunnyDownload, isBunnyPath } from '../utils/b
 import { escapeRegex } from '../utils/safeQuery.js';
 import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts } from '../utils/syncProductCounts.js';
+import { creditReferralReward } from '../utils/referral.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -231,7 +232,7 @@ export const deleteDigitalItem = async (req, res) => {
 };
 
 export const purchaseProduct = async (req, res) => {
-  const { productId, productType, quantity = 1, geo } = req.body;
+  const { productId, productType, quantity = 1, geo, useBonusBalance = false } = req.body;
   const qty = Math.max(1, Math.min(50, parseInt(quantity) || 1));
   const customerId = req.customer._id;
 
@@ -258,9 +259,28 @@ export const purchaseProduct = async (req, res) => {
 
   const totalAmount = parseFloat((product.price * qty).toFixed(2));
 
+  const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
+  if (!preCustomer) return res.status(404).json({ message: 'Customer not found' });
+
+  const availBonus = useBonusBalance ? (preCustomer.bonusBalance || 0) : 0;
+  const fromBonus = Math.min(availBonus, totalAmount);
+  const fromMain = parseFloat((totalAmount - fromBonus).toFixed(4));
+
+  if ((preCustomer.balance || 0) < fromMain) {
+    return res.status(400).json({ message: 'Insufficient balance' });
+  }
+
+  const inc = {};
+  if (fromMain > 0) inc.balance = -fromMain;
+  if (fromBonus > 0) inc.bonusBalance = -fromBonus;
+
   const customer = await CustomerUser.findOneAndUpdate(
-    { _id: customerId, balance: { $gte: totalAmount } },
-    { $inc: { balance: -totalAmount } },
+    {
+      _id: customerId,
+      balance: { $gte: fromMain },
+      ...(fromBonus > 0 ? { bonusBalance: { $gte: fromBonus } } : {})
+    },
+    { $inc: inc },
     { returnDocument: 'after' }
   );
 
@@ -280,7 +300,10 @@ export const purchaseProduct = async (req, res) => {
         if (reservedIds.length > 0) {
           await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { status: 'available', orderId: null } });
         }
-        await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } });
+        const refund = {};
+        if (fromMain > 0) refund.balance = fromMain;
+        if (fromBonus > 0) refund.bonusBalance = fromBonus;
+        if (Object.keys(refund).length) await CustomerUser.findByIdAndUpdate(customerId, { $inc: refund });
         return res.status(400).json({ message: `Only ${reservedIds.length} items available for ${geoCode}` });
       }
       reservedIds.push(item._id);
@@ -324,10 +347,19 @@ export const purchaseProduct = async (req, res) => {
       status: 'success',
       amount: -totalAmount,
       currency: 'USD',
-      note: `Order ${order.uid} x${qty}`
+      note: `Order ${order.uid} x${qty}${fromBonus > 0 ? ` (bonus $${fromBonus.toFixed(2)} + balance $${fromMain.toFixed(2)})` : ''}`
     });
 
     await syncProductCounts(productId, productType);
+
+    creditReferralReward({
+      customerId,
+      orderAmount: totalAmount,
+      orderType: 'order',
+      orderId: order._id,
+      orderUid: order.uid,
+      productType
+    }).catch(() => {});
 
     const notif = await Notification.create({
       userId: customerId,
@@ -341,7 +373,8 @@ export const purchaseProduct = async (req, res) => {
     });
 
     io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
-      balance: customer.balance
+      balance: customer.balance,
+      bonusBalance: customer.bonusBalance
     });
 
     io.of('/customer').to(`customer:${customerId}`).emit('notification', {
@@ -375,7 +408,10 @@ export const purchaseProduct = async (req, res) => {
     if (reservedIds.length > 0) {
       await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { status: 'available', orderId: null } }).catch(() => {});
     }
-    await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } }).catch(() => {});
+    const refund = {};
+    if (fromMain > 0) refund.balance = fromMain;
+    if (fromBonus > 0) refund.bonusBalance = fromBonus;
+    if (Object.keys(refund).length) await CustomerUser.findByIdAndUpdate(customerId, { $inc: refund }).catch(() => {});
     console.error('[DigitalItem] purchase error:', error);
     return res.status(500).json({ message: 'Server error' });
   }

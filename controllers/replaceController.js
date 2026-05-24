@@ -6,6 +6,7 @@ import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
+import { clawbackReferralReward } from '../utils/referral.js';
 import path from 'path';
 import {
   bunnyUpload,
@@ -272,6 +273,8 @@ export const processRefund = async (req, res) => {
 
     order.status = 'cancelled';
     await order.save();
+
+    clawbackReferralReward({ orderId: order._id, orderType: 'order' }).catch(() => {});
 
     const notif = await Notification.create({
       userId: order.customerId,

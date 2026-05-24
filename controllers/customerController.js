@@ -2,10 +2,14 @@ import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import Transaction from '../models/Transaction.js';
 import Notification from '../models/Notification.js';
+import Order from '../models/Order.js';
+import Preorder from '../models/Preorder.js';
+import ServiceOrder from '../models/ServiceOrder.js';
 import bcrypt from 'bcryptjs';
 import { io, onlineCustomers } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { creditReferralReward } from '../utils/referral.js';
 
 export const getCustomers = async (req, res) => {
   try {
@@ -57,13 +61,94 @@ export const getCustomers = async (req, res) => {
 
 export const getCustomer = async (req, res) => {
   try {
-    const customer = await CustomerUser.findById(req.params.id).select('-password -twoFASecret');
+    const customer = await CustomerUser.findById(req.params.id)
+      .select('-password -twoFASecret')
+      .populate('referredBy', 'username uid telegramUsername referralCode email');
     if (!customer) {
       return res.status(404).json({ message: 'Customer not found' });
     }
     return res.status(200).json({ customer });
   } catch (error) {
     console.error('[CustomerController] getCustomer:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const setCustomerReferrer = async (req, res) => {
+  try {
+    const { referralCode, backfill = true } = req.body;
+    const customer = await CustomerUser.findById(req.params.id);
+    if (!customer) return res.status(404).json({ message: 'Customer not found' });
+
+    let newReferrer = null;
+    if (referralCode) {
+      const code = String(referralCode).trim().toUpperCase();
+      newReferrer = await CustomerUser.findOne({ referralCode: code });
+      if (!newReferrer) return res.status(404).json({ message: 'Referrer with this code not found' });
+      if (String(newReferrer._id) === String(customer._id)) {
+        return res.status(400).json({ message: 'Cannot set self as referrer' });
+      }
+    }
+
+    customer.referredBy = newReferrer?._id || null;
+    await customer.save();
+
+    let backfilled = 0;
+    if (backfill && newReferrer) {
+      const deliveredOrders = await Order.find({ customerId: customer._id, status: 'delivered' });
+      for (const o of deliveredOrders) {
+        try {
+          await creditReferralReward({
+            customerId: customer._id,
+            orderAmount: o.amount,
+            orderType: 'order',
+            orderId: o._id,
+            orderUid: o.uid,
+            productType: o.productType
+          });
+          backfilled++;
+        } catch {}
+      }
+      const paidPreorders = await Preorder.find({ customerId: customer._id, paymentStatus: 'paid' });
+      for (const p of paidPreorders) {
+        try {
+          await creditReferralReward({
+            customerId: customer._id,
+            orderAmount: p.amountPaid,
+            orderType: 'preorder',
+            orderId: p._id,
+            orderUid: p.uid,
+            productType: p.productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
+          });
+          backfilled++;
+        } catch {}
+      }
+      const paidServices = await ServiceOrder.find({ customerId: customer._id, paymentStatus: 'paid' });
+      for (const s of paidServices) {
+        try {
+          await creditReferralReward({
+            customerId: customer._id,
+            orderAmount: s.amountPaid,
+            orderType: 'service_order',
+            orderId: s._id,
+            orderUid: s.uid
+          });
+          backfilled++;
+        } catch {}
+      }
+    }
+
+    const populated = await CustomerUser.findById(customer._id)
+      .select('-password -twoFASecret')
+      .populate('referredBy', 'username uid telegramUsername referralCode email');
+
+    return res.status(200).json({
+      message: newReferrer ? 'Referrer assigned' : 'Referrer cleared',
+      customer: populated,
+      backfilled
+    });
+  } catch (error) {
+    console.error('[CustomerController] setCustomerReferrer:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 };

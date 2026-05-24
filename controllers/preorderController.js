@@ -9,6 +9,7 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { creditReferralReward } from '../utils/referral.js';
 import { isValidGeo } from '../utils/geos.js';
 
 const NOTIF_TITLES = {
@@ -50,7 +51,7 @@ export const createPreorder = async (req, res) => {
     }
 
     const customerId = req.customer._id;
-    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo } = req.body;
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo, useBonusBalance = false } = req.body;
 
     let product = null;
     let productType = 'google';
@@ -91,9 +92,28 @@ export const createPreorder = async (req, res) => {
 
     const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
 
+    const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
+    if (!preCustomer) return res.status(404).json({ message: 'Пользователь не найден' });
+
+    const availBonus = useBonusBalance ? (preCustomer.bonusBalance || 0) : 0;
+    const fromBonus = Math.min(availBonus, totalAmount);
+    const fromMain = parseFloat((totalAmount - fromBonus).toFixed(4));
+
+    if ((preCustomer.balance || 0) < fromMain) {
+      return res.status(400).json({ message: 'Недостаточно средств на балансе' });
+    }
+
+    const inc = {};
+    if (fromMain > 0) inc.balance = -fromMain;
+    if (fromBonus > 0) inc.bonusBalance = -fromBonus;
+
     const customer = await CustomerUser.findOneAndUpdate(
-      { _id: customerId, balance: { $gte: totalAmount } },
-      { $inc: { balance: -totalAmount } },
+      {
+        _id: customerId,
+        balance: { $gte: fromMain },
+        ...(fromBonus > 0 ? { bonusBalance: { $gte: fromBonus } } : {})
+      },
+      { $inc: inc },
       { returnDocument: 'after' }
     );
 
@@ -125,12 +145,22 @@ export const createPreorder = async (req, res) => {
         status: 'success',
         amount: -totalAmount,
         currency: 'USD',
-        note: `Preorder ${preorder.uid} x${qty}`
+        note: `Preorder ${preorder.uid} x${qty}${fromBonus > 0 ? ` (bonus $${fromBonus.toFixed(2)} + balance $${fromMain.toFixed(2)})` : ''}`
       });
       await Preorder.updateOne({ _id: preorder._id }, { paymentTransactionUid: txDoc.uid });
 
+      creditReferralReward({
+        customerId,
+        orderAmount: totalAmount,
+        orderType: 'preorder',
+        orderId: preorder._id,
+        orderUid: preorder.uid,
+        productType: productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
+      }).catch(() => {});
+
       io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
-        balance: customer.balance
+        balance: customer.balance,
+        bonusBalance: customer.bonusBalance
       });
 
       const productTitle = product.title?.ru || product.title?.en || String(product._id);
@@ -149,7 +179,10 @@ export const createPreorder = async (req, res) => {
         paymentStatus: 'paid'
       });
     } catch (inner) {
-      await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: totalAmount } }).catch(() => {});
+      const refund = {};
+      if (fromMain > 0) refund.balance = fromMain;
+      if (fromBonus > 0) refund.bonusBalance = fromBonus;
+      if (Object.keys(refund).length) await CustomerUser.findByIdAndUpdate(customerId, { $inc: refund }).catch(() => {});
       console.error('[Preorder] createPreorder rollback:', inner);
       return res.status(500).json({ message: inner.message || 'Ошибка оформления предзаказа' });
     }

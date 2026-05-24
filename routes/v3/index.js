@@ -21,6 +21,7 @@ import serviceOrderRoutes from './serviceOrderRoutes.js';
 import supportRoutes from './supportRoutes.js';
 import dashboardRoutes from './dashboardRoutes.js';
 import cryptoCloudRoutes from './cryptoCloudRoutes.js';
+import referralRoutes from './referralRoutes.js';
 
 const router = express.Router();
 
@@ -46,5 +47,6 @@ router.use('/service-orders', serviceOrderRoutes);
 router.use('/support', supportRoutes);
 router.use('/admin/dashboard', dashboardRoutes);
 router.use('/cryptocloud', cryptoCloudRoutes);
+router.use('/referral', referralRoutes);
 
 export default router;

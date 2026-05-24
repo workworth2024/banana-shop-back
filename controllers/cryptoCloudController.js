@@ -17,6 +17,7 @@ import { bunnyUpload, generateFilename } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts, syncManyProductCounts } from '../utils/syncProductCounts.js';
+import { creditReferralReward } from '../utils/referral.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -712,6 +713,15 @@ async function fulfillProductsOrCart(invoice) {
 
     await syncProductCounts(it.productId, it.productType);
 
+    creditReferralReward({
+      customerId: invoice.customerId,
+      orderAmount: totalAmount,
+      orderType: 'order',
+      orderId: order._id,
+      orderUid: order.uid,
+      productType: it.productType
+    }).catch(() => {});
+
     const notif = await Notification.create({
       userId: invoice.customerId,
       type: 'order_delivered',
@@ -765,6 +775,14 @@ async function fulfillService(invoice) {
   order.paymentStatus = 'paid';
   order.paymentTransactionUid = tx.uid;
   await order.save();
+
+  creditReferralReward({
+    customerId: invoice.customerId,
+    orderAmount: chargeAmount,
+    orderType: 'service_order',
+    orderId: order._id,
+    orderUid: order.uid
+  }).catch(() => {});
 
   invoice.transactionUid = tx.uid;
 
@@ -841,6 +859,15 @@ async function fulfillPreorder(invoice) {
   });
   await Preorder.updateOne({ _id: preorder._id }, { paymentTransactionUid: tx.uid });
   invoice.transactionUid = tx.uid;
+
+  creditReferralReward({
+    customerId: invoice.customerId,
+    orderAmount: totalAmount,
+    orderType: 'preorder',
+    orderId: preorder._id,
+    orderUid: preorder.uid,
+    productType: p.productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
+  }).catch(() => {});
 
   const customer = await CustomerUser.findById(invoice.customerId);
 

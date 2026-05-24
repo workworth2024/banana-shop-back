@@ -34,6 +34,7 @@ const safeUser = (user) => ({
   telegramUsername: user.telegramUsername,
   telegramLinked: !!user.telegramId,
   balance: user.balance,
+  bonusBalance: user.bonusBalance || 0,
   referralCode: user.referralCode,
   twoFAEnabled: user.twoFAEnabled,
   language: user.language || 'en'
@@ -429,12 +430,19 @@ export const telegramCallback = async (req, res) => {
       const fakeEmail = `tg${telegramId}@banana.internal`;
       const randomPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
 
+      let referredByUser = null;
+      const incomingRef = tgData.referralCode || req.body.referralCode;
+      if (incomingRef) {
+        referredByUser = await CustomerUser.findOne({ referralCode: String(incomingRef).toUpperCase() });
+      }
+
       user = await CustomerUser.create({
         username,
         email: fakeEmail,
         password: randomPassword,
         telegramId,
-        telegramUsername: tgData.username || null
+        telegramUsername: tgData.username || null,
+        referredBy: referredByUser?._id || null
       });
     }
 

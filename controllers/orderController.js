@@ -6,6 +6,7 @@ import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { creditReferralReward } from '../utils/referral.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -207,6 +208,17 @@ export const updateOrderStatus = async (req, res) => {
     );
 
     if (!order) return res.status(404).json({ message: 'Order not found' });
+
+    if (status === 'delivered') {
+      creditReferralReward({
+        customerId: order.customerId,
+        orderAmount: order.amount,
+        orderType: 'order',
+        orderId: order._id,
+        orderUid: order.uid,
+        productType: order.productType || order.productSnapshot?.productType
+      }).catch(() => {});
+    }
 
     try {
       const statusLabels = ORDER_STATUS_LABELS[status] || { ru: status, en: status };

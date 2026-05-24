@@ -7,6 +7,7 @@ import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
+import { creditReferralReward } from '../utils/referral.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -40,7 +41,7 @@ export const createServiceOrder = async (req, res) => {
   const customerId = req.customer._id;
 
   try {
-    const { serviceId, responses } = req.body;
+    const { serviceId, responses, useBonusBalance = false } = req.body;
     if (!serviceId) return res.status(400).json({ message: 'serviceId required' });
 
     const service = await Service.findById(serviceId);
@@ -59,9 +60,29 @@ export const createServiceOrder = async (req, res) => {
       return res.status(400).json({ message: 'Некорректный формат ответов' });
     }
 
+    const useBonusBool = useBonusBalance === true || useBonusBalance === 'true';
+    const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
+    if (!preCustomer) return res.status(404).json({ message: 'Пользователь не найден' });
+
+    const availBonus = useBonusBool ? (preCustomer.bonusBalance || 0) : 0;
+    const fromBonus = Math.min(availBonus, chargeAmount);
+    const fromMain = parseFloat((chargeAmount - fromBonus).toFixed(4));
+
+    if ((preCustomer.balance || 0) < fromMain) {
+      return res.status(400).json({ message: 'Недостаточно средств на балансе' });
+    }
+
+    const inc = {};
+    if (fromMain > 0) inc.balance = -fromMain;
+    if (fromBonus > 0) inc.bonusBalance = -fromBonus;
+
     const customer = await CustomerUser.findOneAndUpdate(
-      { _id: customerId, balance: { $gte: chargeAmount } },
-      { $inc: { balance: -chargeAmount } },
+      {
+        _id: customerId,
+        balance: { $gte: fromMain },
+        ...(fromBonus > 0 ? { bonusBalance: { $gte: fromBonus } } : {})
+      },
+      { $inc: inc },
       { returnDocument: 'after' }
     );
 
@@ -111,7 +132,7 @@ export const createServiceOrder = async (req, res) => {
           status: 'success',
           amount: -chargeAmount,
           currency: 'USD',
-          note: `Service ${order.uid}`
+          note: `Service ${order.uid}${fromBonus > 0 ? ` (bonus $${fromBonus.toFixed(2)} + balance $${fromMain.toFixed(2)})` : ''}`
         });
         paymentTransactionUid = txDoc.uid;
         await ServiceOrder.updateOne({ _id: order._id }, { paymentTransactionUid: txDoc.uid });
@@ -121,8 +142,17 @@ export const createServiceOrder = async (req, res) => {
         throw txErr;
       }
 
+      creditReferralReward({
+        customerId,
+        orderAmount: chargeAmount,
+        orderType: 'service_order',
+        orderId: order._id,
+        orderUid: order.uid
+      }).catch(() => {});
+
       io.of('/customer').to(`customer:${String(customerId)}`).emit('balance_updated', {
-        balance: customer.balance
+        balance: customer.balance,
+        bonusBalance: customer.bonusBalance
       });
 
       createAdminNotif({
@@ -143,7 +173,10 @@ export const createServiceOrder = async (req, res) => {
         if (cf.path) deleteAnyFile(cf.path);
       }
       if (persistedOrderId) await ServiceOrder.findByIdAndDelete(persistedOrderId).catch(() => {});
-      await CustomerUser.findByIdAndUpdate(customerId, { $inc: { balance: chargeAmount } }).catch(() => {});
+      const refund = {};
+      if (fromMain > 0) refund.balance = fromMain;
+      if (fromBonus > 0) refund.bonusBalance = fromBonus;
+      if (Object.keys(refund).length) await CustomerUser.findByIdAndUpdate(customerId, { $inc: refund }).catch(() => {});
       console.error('[ServiceOrder] createServiceOrder error:', err);
       return res.status(500).json({ message: err.message || 'Server error' });
     }
