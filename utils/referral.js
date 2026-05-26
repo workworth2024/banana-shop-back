@@ -2,6 +2,7 @@ import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
 import ReferralTransaction from '../models/ReferralTransaction.js';
 import ReferralSettings from '../models/ReferralSettings.js';
+import CustomerReferralRate from '../models/CustomerReferralRate.js';
 import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 
@@ -17,6 +18,18 @@ function resolvePercent(settings, orderType, productType) {
   return settings.googleAds;
 }
 
+async function getEffectivePercent(referrerId, settings, orderType, productType) {
+  const individual = await CustomerReferralRate.findOne({ customerId: referrerId }).lean();
+  if (individual) {
+    let rate = null;
+    if (orderType === 'service_order') rate = individual.services;
+    else if (productType === 'YoutubeProduct') rate = individual.youtube;
+    else rate = individual.googleAds;
+    if (rate !== null && rate !== undefined) return rate;
+  }
+  return resolvePercent(settings, orderType, productType);
+}
+
 export async function creditReferralReward({ customerId, orderAmount, orderType, orderId, orderUid, productType }) {
   try {
     const referral = await CustomerUser.findById(customerId).select('referredBy username');
@@ -26,7 +39,7 @@ export async function creditReferralReward({ customerId, orderAmount, orderType,
     if (existing) return;
 
     const settings = await getSettings();
-    const percent = resolvePercent(settings, orderType, productType);
+    const percent = await getEffectivePercent(referral.referredBy, settings, orderType, productType);
     if (!percent || percent <= 0) return;
 
     const rewardAmount = parseFloat(((orderAmount * percent) / 100).toFixed(4));

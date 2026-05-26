@@ -1,6 +1,7 @@
 import CustomerUser from '../models/CustomerUser.js';
 import ReferralTransaction from '../models/ReferralTransaction.js';
 import ReferralSettings from '../models/ReferralSettings.js';
+import CustomerReferralRate from '../models/CustomerReferralRate.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 
 async function getOrInitSettings() {
@@ -48,11 +49,23 @@ export const getMyReferralStats = async (req, res) => {
     const limitNum = Math.min(50, Math.max(1, parseInt(limit)));
     const skip = (pageNum - 1) * limitNum;
 
-    const [user, settings] = await Promise.all([
+    const [user, settings, individualRate] = await Promise.all([
       CustomerUser.findById(customerId).select('referralCode'),
-      getOrInitSettings()
+      getOrInitSettings(),
+      CustomerReferralRate.findOne({ customerId }).lean()
     ]);
     if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const effectiveRates = {
+      googleAds: (individualRate?.googleAds !== null && individualRate?.googleAds !== undefined) ? individualRate.googleAds : settings.googleAds,
+      youtube: (individualRate?.youtube !== null && individualRate?.youtube !== undefined) ? individualRate.youtube : settings.youtube,
+      services: (individualRate?.services !== null && individualRate?.services !== undefined) ? individualRate.services : settings.services,
+      isIndividual: {
+        googleAds: individualRate?.googleAds !== null && individualRate?.googleAds !== undefined,
+        youtube: individualRate?.youtube !== null && individualRate?.youtube !== undefined,
+        services: individualRate?.services !== null && individualRate?.services !== undefined
+      }
+    };
 
     const dateFilter = {};
     const now = new Date();
@@ -147,7 +160,7 @@ export const getMyReferralStats = async (req, res) => {
 
     return res.json({
       referralCode: user.referralCode,
-      rates: { googleAds: settings.googleAds, youtube: settings.youtube, services: settings.services },
+      rates: effectiveRates,
       totalEarnedAllTime: allTime[0]?.total || 0,
       totalPurchasesAllTime: allTime[0]?.count || 0,
       periodEarned: periodData[0]?.total || 0,
@@ -239,6 +252,150 @@ export const getAllReferrers = async (req, res) => {
     return res.json({ referrers: rows, total, page: pageNum, pages: Math.ceil(total / limitNum) });
   } catch (e) {
     console.error('[Referral] getAllReferrers error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const searchCustomersForRate = async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    if (!q) return res.json([]);
+    const safe = escapeRegex(q);
+    const users = await CustomerUser.find({
+      $or: [
+        { username: { $regex: safe, $options: 'i' } },
+        { uid: { $regex: safe, $options: 'i' } }
+      ]
+    }).select('_id uid username telegramUsername').limit(10).lean();
+    return res.json(users);
+  } catch (e) {
+    console.error('[Referral] searchCustomers error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getCustomerRates = async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    const skip = (pageNum - 1) * limitNum;
+
+    let customerFilter = {};
+    if (search.trim()) {
+      const safe = escapeRegex(String(search).slice(0, 100));
+      const isNumeric = /^\d+(\.\d+)?$/.test(search.trim());
+      if (isNumeric) {
+        const numVal = parseFloat(search.trim());
+        const matchingByRate = await CustomerReferralRate.find({
+          $or: [
+            { googleAds: numVal },
+            { youtube: numVal },
+            { services: numVal }
+          ]
+        }).select('customerId').lean();
+        const rateIds = matchingByRate.map(r => r.customerId);
+
+        const matchingByUser = await CustomerUser.find({
+          $or: [
+            { username: { $regex: safe, $options: 'i' } },
+            { uid: { $regex: safe, $options: 'i' } }
+          ]
+        }).select('_id').lean();
+        const userIds = matchingByUser.map(u => u._id);
+
+        const allIds = [...new Set([...rateIds.map(String), ...userIds.map(String)])];
+        customerFilter = { customerId: { $in: allIds } };
+      } else {
+        const matchingUsers = await CustomerUser.find({
+          $or: [
+            { username: { $regex: safe, $options: 'i' } },
+            { uid: { $regex: safe, $options: 'i' } }
+          ]
+        }).select('_id').lean();
+        customerFilter = { customerId: { $in: matchingUsers.map(u => u._id) } };
+      }
+    }
+
+    const total = await CustomerReferralRate.countDocuments(customerFilter);
+    const rates = await CustomerReferralRate.find(customerFilter)
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    const customerIds = rates.map(r => r.customerId);
+    const customers = await CustomerUser.find({ _id: { $in: customerIds } })
+      .select('_id uid username telegramUsername')
+      .lean();
+    const custMap = {};
+    for (const c of customers) custMap[String(c._id)] = c;
+
+    const rows = rates.map(r => {
+      const c = custMap[String(r.customerId)] || {};
+      return {
+        _id: r._id,
+        customerId: r.customerId,
+        uid: c.uid || '',
+        username: c.username || '',
+        telegramUsername: c.telegramUsername || '',
+        googleAds: r.googleAds,
+        youtube: r.youtube,
+        services: r.services,
+        updatedAt: r.updatedAt
+      };
+    });
+
+    return res.json({ rates: rows, total, page: pageNum, pages: Math.ceil(total / limitNum) });
+  } catch (e) {
+    console.error('[Referral] getCustomerRates error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const setCustomerRate = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { googleAds, youtube, services } = req.body;
+
+    const customer = await CustomerUser.findById(customerId).select('_id uid username telegramUsername');
+    if (!customer) return res.status(404).json({ message: 'Customer not found' });
+
+    const update = {};
+    if (googleAds !== undefined) update.googleAds = googleAds === null ? null : Math.min(100, Math.max(0, Number(googleAds)));
+    if (youtube !== undefined) update.youtube = youtube === null ? null : Math.min(100, Math.max(0, Number(youtube)));
+    if (services !== undefined) update.services = services === null ? null : Math.min(100, Math.max(0, Number(services)));
+
+    const rate = await CustomerReferralRate.findOneAndUpdate(
+      { customerId },
+      { $set: update },
+      { upsert: true, new: true, returnDocument: 'after' }
+    );
+
+    return res.json({
+      _id: rate._id,
+      customerId: rate.customerId,
+      uid: customer.uid,
+      username: customer.username,
+      telegramUsername: customer.telegramUsername,
+      googleAds: rate.googleAds,
+      youtube: rate.youtube,
+      services: rate.services,
+      updatedAt: rate.updatedAt
+    });
+  } catch (e) {
+    console.error('[Referral] setCustomerRate error:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const deleteCustomerRate = async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    await CustomerReferralRate.findOneAndDelete({ customerId });
+    return res.json({ message: 'Individual rate removed' });
+  } catch (e) {
+    console.error('[Referral] deleteCustomerRate error:', e);
     return res.status(500).json({ message: 'Server error' });
   }
 };
