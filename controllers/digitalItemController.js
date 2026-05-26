@@ -52,9 +52,39 @@ export const uploadDigitalItems = async (req, res) => {
 
     const total = req.files.length;
     const items = [];
+    const skipped = [];
 
     for (let i = 0; i < total; i++) {
       const file = req.files[i];
+
+      const contentHash = crypto.createHash('sha256').update(file.buffer).digest('hex');
+
+      const existingByHash = await DigitalItem.findOne({ productId, contentHash }).select('_id originalName geo').lean();
+      if (existingByHash) {
+        skipped.push({ originalName: file.originalname, existingGeo: existingByHash.geo, reason: 'content_duplicate' });
+        io.of('/admin').to('admins').emit('digital_upload_progress', {
+          index: i + 1,
+          total,
+          fileName: file.originalname,
+          fileSize: file.size,
+          status: 'skipped_duplicate'
+        });
+        continue;
+      }
+
+      const existingByName = await DigitalItem.findOne({ productId, originalName: file.originalname }).select('_id geo').lean();
+      if (existingByName) {
+        skipped.push({ originalName: file.originalname, existingGeo: existingByName.geo, reason: 'name_duplicate' });
+        io.of('/admin').to('admins').emit('digital_upload_progress', {
+          index: i + 1,
+          total,
+          fileName: file.originalname,
+          fileSize: file.size,
+          status: 'skipped_duplicate'
+        });
+        continue;
+      }
+
       const ext = path.extname(file.originalname);
       const base = path.basename(file.originalname, ext)
         .replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -78,7 +108,8 @@ export const uploadDigitalItems = async (req, res) => {
         geo,
         filePath: remotePath,
         originalName: file.originalname,
-        fileSize: file.size
+        fileSize: file.size,
+        contentHash
       });
 
       io.of('/admin').to('admins').emit('digital_upload_progress', {
@@ -90,7 +121,9 @@ export const uploadDigitalItems = async (req, res) => {
       });
     }
 
-    await DigitalItem.insertMany(items);
+    if (items.length > 0) {
+      await DigitalItem.insertMany(items);
+    }
 
     const syncResult = await syncProductCounts(productId, productType);
     const newCount = syncResult.total;
@@ -104,8 +137,9 @@ export const uploadDigitalItems = async (req, res) => {
     });
 
     return res.status(201).json({
-      message: `${items.length} file(s) uploaded`,
+      message: `${items.length} file(s) uploaded${skipped.length > 0 ? `, ${skipped.length} duplicate(s) skipped` : ''}`,
       uploaded: items.length,
+      skipped,
       newCount,
       geo,
       geos: syncResult.geos,

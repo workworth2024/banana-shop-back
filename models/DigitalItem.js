@@ -44,10 +44,16 @@ const digitalItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order',
     default: null
+  },
+  contentHash: {
+    type: String,
+    default: null
   }
 }, { timestamps: true });
 
 digitalItemSchema.index({ productId: 1, status: 1 });
 digitalItemSchema.index({ productId: 1, geo: 1, status: 1 });
+digitalItemSchema.index({ productId: 1, contentHash: 1 });
+digitalItemSchema.index({ productId: 1, originalName: 1 });
 
 export default mongoose.model('DigitalItem', digitalItemSchema);
