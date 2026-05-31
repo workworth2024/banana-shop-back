@@ -69,6 +69,25 @@ const customerUserSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  acquisition: {
+    linkId: { type: mongoose.Schema.Types.ObjectId, ref: 'TrackingLink', default: null },
+    linkCode: { type: String, default: null },
+    utm: {
+      source: { type: String, default: '' },
+      medium: { type: String, default: '' },
+      campaign: { type: String, default: '' },
+      term: { type: String, default: '' },
+      content: { type: String, default: '' }
+    },
+    subs: { type: mongoose.Schema.Types.Mixed, default: {} },
+    geo: { type: String, default: '' },
+    device: {
+      type: { type: String, default: 'unknown' },
+      os: { type: String, default: '' },
+      browser: { type: String, default: '' }
+    },
+    landedAt: { type: Date, default: null }
+  },
   language: {
     type: String,
     enum: ['ru', 'en'],

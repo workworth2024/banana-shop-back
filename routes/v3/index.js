@@ -22,6 +22,7 @@ import supportRoutes from './supportRoutes.js';
 import dashboardRoutes from './dashboardRoutes.js';
 import cryptoCloudRoutes from './cryptoCloudRoutes.js';
 import referralRoutes from './referralRoutes.js';
+import trackingRoutes from './trackingRoutes.js';
 
 const router = express.Router();
 
@@ -48,5 +49,6 @@ router.use('/support', supportRoutes);
 router.use('/admin/dashboard', dashboardRoutes);
 router.use('/cryptocloud', cryptoCloudRoutes);
 router.use('/referral', referralRoutes);
+router.use('/tracking', trackingRoutes);
 
 export default router;

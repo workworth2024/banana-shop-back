@@ -8,6 +8,7 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { recordPurchase } from '../utils/tracking.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -145,6 +146,14 @@ export const createServiceOrder = async (req, res) => {
       creditReferralReward({
         customerId,
         orderAmount: chargeAmount,
+        orderType: 'service_order',
+        orderId: order._id,
+        orderUid: order.uid
+      }).catch(() => {});
+
+      recordPurchase({
+        customerId,
+        amount: chargeAmount,
         orderType: 'service_order',
         orderId: order._id,
         orderUid: order.uid

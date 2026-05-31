@@ -10,6 +10,7 @@ import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../ut
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { recordPurchase } from '../utils/tracking.js';
 import { isValidGeo } from '../utils/geos.js';
 
 const NOTIF_TITLES = {
@@ -152,6 +153,15 @@ export const createPreorder = async (req, res) => {
       creditReferralReward({
         customerId,
         orderAmount: totalAmount,
+        orderType: 'preorder',
+        orderId: preorder._id,
+        orderUid: preorder.uid,
+        productType: productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
+      }).catch(() => {});
+
+      recordPurchase({
+        customerId,
+        amount: totalAmount,
         orderType: 'preorder',
         orderId: preorder._id,
         orderUid: preorder.uid,

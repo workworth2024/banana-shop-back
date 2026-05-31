@@ -16,6 +16,7 @@ import { escapeRegex } from '../utils/safeQuery.js';
 import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { recordPurchase } from '../utils/tracking.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -389,6 +390,15 @@ export const purchaseProduct = async (req, res) => {
     creditReferralReward({
       customerId,
       orderAmount: totalAmount,
+      orderType: 'order',
+      orderId: order._id,
+      orderUid: order.uid,
+      productType
+    }).catch(() => {});
+
+    recordPurchase({
+      customerId,
+      amount: totalAmount,
       orderType: 'order',
       orderId: order._id,
       orderUid: order.uid,

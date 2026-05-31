@@ -7,6 +7,7 @@ import { io } from '../server.js';
 import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { recordPurchase } from '../utils/tracking.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -213,6 +214,15 @@ export const updateOrderStatus = async (req, res) => {
       creditReferralReward({
         customerId: order.customerId,
         orderAmount: order.amount,
+        orderType: 'order',
+        orderId: order._id,
+        orderUid: order.uid,
+        productType: order.productType || order.productSnapshot?.productType
+      }).catch(() => {});
+
+      recordPurchase({
+        customerId: order.customerId,
+        amount: order.amount,
         orderType: 'order',
         orderId: order._id,
         orderUid: order.uid,

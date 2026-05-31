@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import { createAdminNotif } from './adminNotifController.js';
+import { attachAcquisition } from '../utils/tracking.js';
 
 const COOKIE_NAME = 'customer_token';
 const JWT_EXPIRES_IN = '7d';
@@ -130,6 +131,8 @@ export const register = async (req, res) => {
       link: `/clients?search=${encodeURIComponent(newUser.uid)}`,
       meta: { customerId: newUser._id, username: newUser.username, uid: newUser.uid }
     });
+
+    attachAcquisition({ user: newUser, code: req.body?.trackingCode, req }).catch(() => {});
 
     return res.status(201).json({
       message: 'Account created successfully',
@@ -413,8 +416,10 @@ export const telegramCallback = async (req, res) => {
     const telegramId = String(tgData.id);
 
     let user = await CustomerUser.findOne({ telegramId });
+    let isNewUser = false;
 
     if (!user) {
+      isNewUser = true;
       let baseUsername = (tgData.username || tgData.first_name || 'user')
         .replace(/[^a-zA-Z0-9_]/g, '')
         .slice(0, 25);
@@ -462,6 +467,10 @@ export const telegramCallback = async (req, res) => {
     });
 
     setAuthCookie(res, token);
+
+    if (isNewUser) {
+      attachAcquisition({ user, code: req.body?.trackingCode, req }).catch(() => {});
+    }
 
     return res.status(200).json({
       message: 'Logged in via Telegram',

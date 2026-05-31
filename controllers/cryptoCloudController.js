@@ -18,6 +18,7 @@ import { deleteAnyFile } from '../utils/deleteFile.js';
 import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts, syncManyProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { recordPurchase } from '../utils/tracking.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -722,6 +723,15 @@ async function fulfillProductsOrCart(invoice) {
       productType: it.productType
     }).catch(() => {});
 
+    recordPurchase({
+      customerId: invoice.customerId,
+      amount: totalAmount,
+      orderType: 'order',
+      orderId: order._id,
+      orderUid: order.uid,
+      productType: it.productType
+    }).catch(() => {});
+
     const notif = await Notification.create({
       userId: invoice.customerId,
       type: 'order_delivered',
@@ -779,6 +789,14 @@ async function fulfillService(invoice) {
   creditReferralReward({
     customerId: invoice.customerId,
     orderAmount: chargeAmount,
+    orderType: 'service_order',
+    orderId: order._id,
+    orderUid: order.uid
+  }).catch(() => {});
+
+  recordPurchase({
+    customerId: invoice.customerId,
+    amount: chargeAmount,
     orderType: 'service_order',
     orderId: order._id,
     orderUid: order.uid
@@ -863,6 +881,15 @@ async function fulfillPreorder(invoice) {
   creditReferralReward({
     customerId: invoice.customerId,
     orderAmount: totalAmount,
+    orderType: 'preorder',
+    orderId: preorder._id,
+    orderUid: preorder.uid,
+    productType: p.productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
+  }).catch(() => {});
+
+  recordPurchase({
+    customerId: invoice.customerId,
+    amount: totalAmount,
     orderType: 'preorder',
     orderId: preorder._id,
     orderUid: preorder.uid,
