@@ -19,6 +19,7 @@ import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts, syncManyProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { getEffectiveUnitPrice } from '../utils/pricing.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -176,7 +177,7 @@ async function reserveItemsForRequest(items, customerId) {
       const titleRu = product.title?.ru || product.title?.en || product.name || '';
       const titleEn = product.title?.en || product.title?.ru || product.name || '';
       const descStr = product.desc?.ru || product.desc?.en || '';
-      const unitPrice = parseFloat(Number(product.price) || 0);
+      const unitPrice = getEffectiveUnitPrice(product, qty);
 
       enrichedItems.push({
         productId: String(productId),
@@ -518,7 +519,7 @@ export const checkoutPreorder = async (req, res) => {
     }
 
     const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10) || 1));
-    const unitPrice = parseFloat(Number(product.price) || 0);
+    const unitPrice = getEffectiveUnitPrice(product, qty);
     if (unitPrice <= 0) return res.status(400).json({ message: 'Предзаказ этого товара временно недоступен' });
 
     const totalAmount = parseFloat((unitPrice * qty).toFixed(2));

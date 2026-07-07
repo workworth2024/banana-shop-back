@@ -17,6 +17,7 @@ import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { getEffectiveUnitPrice } from '../utils/pricing.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -292,7 +293,8 @@ export const purchaseProduct = async (req, res) => {
     return res.status(400).json({ message: `Geo ${geoCode} is not available for this product` });
   }
 
-  const totalAmount = parseFloat((product.price * qty).toFixed(2));
+  const unitPrice = getEffectiveUnitPrice(product, qty);
+  const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
 
   const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
   if (!preCustomer) return res.status(404).json({ message: 'Customer not found' });
@@ -362,7 +364,7 @@ export const purchaseProduct = async (req, res) => {
         description: descStr,
         productType,
         productSubType: product.type || '',
-        price: product.price,
+        price: unitPrice,
         image: product.path_image || product.image || '',
         geo: geoCode
       },

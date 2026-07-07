@@ -240,6 +240,7 @@ mongoose.connect(process.env.MONGO_URI)
     await migrateProductUids();
     await migrateServiceUids();
     await migrateProductGeos();
+    await migrateCustomerVerifEmail();
     cleanOldReplacePhotos();
   })
   .catch(err => console.error('MongoDB connection error:', err));
@@ -333,6 +334,21 @@ async function migrateProductGeos() {
     }
   } catch (e) {
     console.error('[migrate] migrateProductGeos error:', e.message);
+  }
+}
+
+async function migrateCustomerVerifEmail() {
+  try {
+    const { default: CustomerUser } = await import('./models/CustomerUser.js');
+    const result = await CustomerUser.updateMany(
+      { verifemail: { $exists: false } },
+      { $set: { verifemail: true } }
+    );
+    if (result.modifiedCount > 0) {
+      console.log(`[migrate] Set verifemail=true on ${result.modifiedCount} existing customers`);
+    }
+  } catch (e) {
+    console.error('[migrate] migrateCustomerVerifEmail error:', e.message);
   }
 }
 

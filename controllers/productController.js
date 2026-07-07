@@ -5,6 +5,8 @@ import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunny
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { sanitizeGeos } from '../utils/geos.js';
+import { syncProductCounts } from '../utils/syncProductCounts.js';
+import { parsePriceTiers } from '../utils/pricing.js';
 
 const parseGeosFromBody = (body) => {
   let raw = body.geos;
@@ -14,8 +16,65 @@ const parseGeosFromBody = (body) => {
   return sanitizeGeos(raw);
 };
 
-const totalCountsFromGeos = (geos) =>
-  (Array.isArray(geos) ? geos : []).reduce((s, g) => s + (Number(g.counts) || 0), 0);
+const mergeGeoCounts = (selectedGeos, existingGeos) => {
+  const prev = new Map((Array.isArray(existingGeos) ? existingGeos : []).map(g => [g.code, Number(g.counts) || 0]));
+  return (Array.isArray(selectedGeos) ? selectedGeos : []).map(g => ({ code: g.code, counts: prev.get(g.code) || 0 }));
+};
+
+const parseIdArrayFromBody = (raw) => {
+  if (raw === undefined || raw === null) return [];
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try {
+      const parsed = JSON.parse(s);
+      raw = Array.isArray(parsed) ? parsed : s.split(',');
+    } catch {
+      raw = s.split(',');
+    }
+  }
+  if (!Array.isArray(raw)) raw = [raw];
+  return raw
+    .map(v => String(v).trim())
+    .filter(v => mongoose.isValidObjectId(v));
+};
+
+const parseFeaturesFromBody = (body) => {
+  let raw = body.features;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const ru = String(item.ru || '').trim().slice(0, 80);
+    const en = String(item.en || '').trim().slice(0, 80);
+    if (!ru && !en) continue;
+    out.push({ ru, en });
+  }
+  return out;
+};
+
+const splitMultiParam = (val) =>
+  String(val || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .slice(0, 30);
+
+const buildPriceRangeFilter = (val) => {
+  const ranges = splitMultiParam(val)
+    .map(part => {
+      const [min, max] = part.split('-').map(n => parseFloat(n));
+      const cond = {};
+      if (Number.isFinite(min)) cond.$gte = min;
+      if (Number.isFinite(max)) cond.$lte = max;
+      return Object.keys(cond).length ? { price: cond } : null;
+    })
+    .filter(Boolean);
+  return ranges.length ? { $or: ranges } : null;
+};
 
 const addDateFilter = (query, startDate, endDate) => {
   if (startDate || endDate) {
@@ -110,14 +169,18 @@ export const createYoutubeProduct = async (req, res) => {
     const title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
     const desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     const link = req.body.link || '';
-    const wholesale_price = req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null;
-    const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
+    let price_tiers;
+    try {
+      price_tiers = parsePriceTiers(req.body.price_tiers, price);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
 
     const path_image = req.file ? await uploadProductImage(req.file) : '';
-    const geos = parseGeosFromBody(req.body);
-    const counts = totalCountsFromGeos(geos);
+    const geos = mergeGeoCounts(parseGeosFromBody(req.body), []);
+    const counts = 0;
 
-    const productData = { type, title, desc, price, counts, geos, path_image, link, wholesale_price, count_for_wholesale };
+    const productData = { type, title, desc, price, counts, geos, path_image, link, price_tiers };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) productData.filter_id = filterId;
 
@@ -132,13 +195,18 @@ export const updateYoutubeProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const { type, price } = req.body;
-    const geos = parseGeosFromBody(req.body);
+    const existing = await YoutubeProduct.findById(id).select('geos path_image');
+    const geos = mergeGeoCounts(parseGeosFromBody(req.body), existing?.geos);
+    let price_tiers;
+    try {
+      price_tiers = parsePriceTiers(req.body.price_tiers, price);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
     const updateData = {
       type, price, geos,
-      counts: totalCountsFromGeos(geos),
       link: req.body.link || '',
-      wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
-      count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null
+      price_tiers
     };
 
     const filterId = req.body.filter_id;
@@ -152,12 +220,13 @@ export const updateYoutubeProduct = async (req, res) => {
     }
 
     if (req.file) {
-      const old = await YoutubeProduct.findById(id).select('path_image');
-      deleteProductImage(old?.path_image);
+      deleteProductImage(existing?.path_image);
       updateData.path_image = await uploadProductImage(req.file);
     }
 
-    const product = await YoutubeProduct.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
+    await YoutubeProduct.findByIdAndUpdate(id, updateData);
+    await syncProductCounts(id, 'YoutubeProduct');
+    const product = await YoutubeProduct.findById(id);
     res.json(product);
   } catch (error) {
     res.status(500).json({ message: 'Error updating Youtube product' });
@@ -180,7 +249,10 @@ export const getGoogleAdsProductById = async (req, res) => {
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ message: 'Invalid product ID' });
     }
-    const product = await GoogleAdsProduct.findById(id).populate('filter_id');
+    const product = await GoogleAdsProduct.findById(id)
+      .populate('filter_id')
+      .populate('templateIds')
+      .populate({ path: 'serviceIds', populate: { path: 'scenarioId' } });
     if (!product) return res.status(404).json({ message: 'Product not found' });
     res.json(product);
   } catch (error) {
@@ -190,24 +262,84 @@ export const getGoogleAdsProductById = async (req, res) => {
 
 export const getGoogleAdsProducts = async (req, res) => {
   try {
-    const { search = '', filter, type, geo, startDate, endDate } = req.query;
+    const { search = '', filter, type, geo, payment, feature, price, inStock, stock, sort, startDate, endDate } = req.query;
+    const andConditions = [];
+    if (search) andConditions.push(buildSearchQuery(search));
     const query = {};
-    if (search) Object.assign(query, buildSearchQuery(search));
     if (filter) query.filter_id = filter;
     if (type) query.type = type;
-    if (geo) query['geos.code'] = String(geo).toUpperCase();
+    const geoVals = splitMultiParam(geo).map(g => String(g).toUpperCase());
+    if (geoVals.length === 1) query['geos.code'] = geoVals[0];
+    else if (geoVals.length > 1) query['geos.code'] = { $in: geoVals };
+
+    const stockMode = String(stock || '').toLowerCase();
+    if (stockMode === 'instock' || inStock === 'true' || inStock === '1') query.counts = { $gt: 0 };
+    else if (stockMode === 'preorder') query.counts = { $lte: 0 };
+
+    const paymentVals = splitMultiParam(payment);
+    if (paymentVals.length) {
+      andConditions.push({ $or: [
+        { 'payment.ru': { $in: paymentVals } },
+        { 'payment.en': { $in: paymentVals } }
+      ] });
+    }
+    const featureVals = splitMultiParam(feature);
+    if (featureVals.length) {
+      andConditions.push({ $or: [
+        { 'features.ru': { $in: featureVals } },
+        { 'features.en': { $in: featureVals } }
+      ] });
+    }
+    const priceFilter = buildPriceRangeFilter(price);
+    if (priceFilter) andConditions.push(priceFilter);
+
     addDateFilter(query, startDate, endDate);
+    if (andConditions.length) query.$and = andConditions;
+
+    const sortMode = String(sort || '').toLowerCase();
+    const sortStage =
+      sortMode === 'price_asc' ? { price: 1 } :
+      sortMode === 'price_desc' ? { price: -1 } :
+      { createdAt: -1 };
 
     const { pageNum, limitNum, skip } = parseProductListPaging(req.query);
     const products = await GoogleAdsProduct.find(query)
       .populate('filter_id')
-      .sort({ createdAt: -1 })
+      .sort(sortStage)
       .skip(skip)
       .limit(limitNum);
 
     const total = await GoogleAdsProduct.countDocuments(query);
     const availableTypes = await GoogleAdsProduct.distinct('type');
     const availableGeos = await GoogleAdsProduct.distinct('geos.code');
+
+    const priceRangeAgg = await GoogleAdsProduct.aggregate([
+      { $group: { _id: null, min: { $min: '$price' }, max: { $max: '$price' } } }
+    ]);
+    const availablePriceRange = {
+      min: Math.floor(priceRangeAgg[0]?.min ?? 0),
+      max: Math.ceil(priceRangeAgg[0]?.max ?? 0)
+    };
+
+    const paymentAgg = await GoogleAdsProduct.aggregate([
+      { $match: { $or: [
+        { 'payment.ru': { $nin: [null, ''] } },
+        { 'payment.en': { $nin: [null, ''] } }
+      ] } },
+      { $group: { _id: { ru: '$payment.ru', en: '$payment.en' } } }
+    ]);
+    const availablePayments = paymentAgg
+      .map(p => ({ ru: p._id.ru || '', en: p._id.en || '' }))
+      .filter(p => p.ru || p.en);
+
+    const featureAgg = await GoogleAdsProduct.aggregate([
+      { $unwind: '$features' },
+      { $group: { _id: { ru: '$features.ru', en: '$features.en' } } }
+    ]);
+    const availableFeatures = featureAgg
+      .map(f => ({ ru: f._id.ru || '', en: f._id.en || '' }))
+      .filter(f => f.ru || f.en);
+
     const pages = Math.ceil(total / limitNum) || 1;
 
     res.json({
@@ -217,7 +349,10 @@ export const getGoogleAdsProducts = async (req, res) => {
       limit: limitNum,
       pages,
       availableTypes: availableTypes.filter(Boolean),
-      availableGeos: availableGeos.filter(Boolean)
+      availableGeos: availableGeos.filter(Boolean),
+      availablePayments,
+      availableFeatures,
+      availablePriceRange
     });
   } catch (error) {
     res.status(500).json({ message: 'Error fetching Google Ads products' });
@@ -228,19 +363,27 @@ export const createGoogleAdsProduct = async (req, res) => {
   try {
     const { type, price } = req.body;
     const link = req.body.link || '';
-    const wholesale_price = req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null;
-    const count_for_wholesale = req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null;
+    let price_tiers;
+    try {
+      price_tiers = parsePriceTiers(req.body.price_tiers, price);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
     const title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
     const sub_title = { ru: req.body['sub_title.ru'] || '', en: req.body['sub_title.en'] || '' };
     const desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     const inclusive = { ru: req.body['inclusive.ru'] || '', en: req.body['inclusive.en'] || '' };
     const receive = { ru: req.body['receive.ru'] || '', en: req.body['receive.en'] || '' };
+    const payment = { ru: req.body['payment.ru'] || '', en: req.body['payment.en'] || '' };
+    const features = parseFeaturesFromBody(req.body);
 
     const path_image = req.file ? await uploadProductImage(req.file) : '';
-    const geos = parseGeosFromBody(req.body);
-    const counts = totalCountsFromGeos(geos);
+    const geos = mergeGeoCounts(parseGeosFromBody(req.body), []);
+    const counts = 0;
 
-    const productData = { type, title, sub_title, desc, inclusive, receive, price, counts, geos, path_image, link, wholesale_price, count_for_wholesale };
+    const productData = { type, title, sub_title, desc, inclusive, receive, payment, features, price, counts, geos, path_image, link, price_tiers };
+    productData.templateIds = parseIdArrayFromBody(req.body.templateIds);
+    productData.serviceIds = parseIdArrayFromBody(req.body.serviceIds);
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) productData.filter_id = filterId;
 
@@ -255,13 +398,18 @@ export const updateGoogleAdsProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const { type, price } = req.body;
-    const geos = parseGeosFromBody(req.body);
+    const existing = await GoogleAdsProduct.findById(id).select('geos path_image');
+    const geos = mergeGeoCounts(parseGeosFromBody(req.body), existing?.geos);
+    let price_tiers;
+    try {
+      price_tiers = parsePriceTiers(req.body.price_tiers, price);
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
     const updateData = {
       type, price, geos,
-      counts: totalCountsFromGeos(geos),
       link: req.body.link || '',
-      wholesale_price: req.body.wholesale_price ? parseFloat(req.body.wholesale_price) : null,
-      count_for_wholesale: req.body.count_for_wholesale ? parseInt(req.body.count_for_wholesale) : null
+      price_tiers
     };
 
     const filterId = req.body.filter_id;
@@ -282,14 +430,25 @@ export const updateGoogleAdsProduct = async (req, res) => {
     if (req.body['receive.ru'] || req.body['receive.en']) {
       updateData.receive = { ru: req.body['receive.ru'] || '', en: req.body['receive.en'] || '' };
     }
+    updateData.payment = { ru: req.body['payment.ru'] || '', en: req.body['payment.en'] || '' };
+    if (req.body.features !== undefined) {
+      updateData.features = parseFeaturesFromBody(req.body);
+    }
+    if (req.body.templateIds !== undefined) {
+      updateData.templateIds = parseIdArrayFromBody(req.body.templateIds);
+    }
+    if (req.body.serviceIds !== undefined) {
+      updateData.serviceIds = parseIdArrayFromBody(req.body.serviceIds);
+    }
 
     if (req.file) {
-      const old = await GoogleAdsProduct.findById(id).select('path_image');
-      deleteProductImage(old?.path_image);
+      deleteProductImage(existing?.path_image);
       updateData.path_image = await uploadProductImage(req.file);
     }
 
-    const product = await GoogleAdsProduct.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
+    await GoogleAdsProduct.findByIdAndUpdate(id, updateData);
+    await syncProductCounts(id, 'GoogleAdsProduct');
+    const product = await GoogleAdsProduct.findById(id);
     res.json(product);
   } catch (error) {
     res.status(500).json({ message: 'Error updating Google Ads product' });

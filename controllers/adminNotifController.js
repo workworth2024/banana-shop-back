@@ -52,7 +52,8 @@ export const createAdminNotif = async ({ category, type, title, message, link = 
       message: notif.message,
       link: notif.link,
       createdAt: notif.createdAt,
-      unreadCount
+      unreadCount,
+      categoryUnreadCount: await AdminNotification.countDocuments({ category, isRead: false })
     });
   } catch (err) {
     console.error('[AdminNotif] createAdminNotif error:', err);
@@ -84,6 +85,36 @@ export const getAdminNotifCount = async (req, res) => {
   try {
     const unreadCount = await AdminNotification.countDocuments({ isRead: false });
     return res.status(200).json({ unreadCount });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const getAdminNotifCategoryCounts = async (req, res) => {
+  try {
+    const rows = await AdminNotification.aggregate([
+      { $match: { isRead: false } },
+      { $group: { _id: '$category', count: { $sum: 1 } } }
+    ]);
+    const counts = {};
+    rows.forEach((r) => { counts[r._id] = r.count; });
+    return res.status(200).json({ counts });
+  } catch (err) {
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const markCategoryRead = async (req, res) => {
+  try {
+    const { categories } = req.body;
+    if (!Array.isArray(categories) || categories.length === 0) {
+      return res.status(400).json({ message: 'categories is required' });
+    }
+    await AdminNotification.updateMany(
+      { category: { $in: categories }, isRead: false },
+      { $set: { isRead: true } }
+    );
+    return res.status(200).json({ ok: true });
   } catch (err) {
     return res.status(500).json({ message: 'Server error' });
   }

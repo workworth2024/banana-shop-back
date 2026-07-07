@@ -5,12 +5,22 @@ import speakeasy from 'speakeasy';
 import QRCode from 'qrcode';
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
+import PendingRegistration from '../models/PendingRegistration.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { attachAcquisition } from '../utils/tracking.js';
+import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/mailer.js';
 
 const COOKIE_NAME = 'customer_token';
 const JWT_EXPIRES_IN = '7d';
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+const PENDING_TTL_MS = 15 * 60 * 1000;
+const MAX_VERIFY_ATTEMPTS = 6;
+
+const generateCode = () => String(Math.floor(100000 + Math.random() * 900000));
+
+const isInternalEmail = (email) => /@banana\.internal$/i.test(String(email || ''));
+
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || ''));
 
 const generateToken = (id) => {
   return jwt.sign({ id, type: 'customer' }, process.env.JWT_SECRET, {
@@ -27,19 +37,24 @@ const setAuthCookie = (res, token) => {
   });
 };
 
-const safeUser = (user) => ({
-  id: user._id,
-  uid: user.uid,
-  username: user.username,
-  email: user.email,
-  telegramUsername: user.telegramUsername,
-  telegramLinked: !!user.telegramId,
-  balance: user.balance,
-  bonusBalance: user.bonusBalance || 0,
-  referralCode: user.referralCode,
-  twoFAEnabled: user.twoFAEnabled,
-  language: user.language || 'en'
-});
+const safeUser = (user) => {
+  const internal = isInternalEmail(user.email);
+  return {
+    id: user._id,
+    uid: user.uid,
+    username: user.username,
+    email: internal ? '' : user.email,
+    emailVerified: !internal && user.verifemail !== false,
+    telegramUsername: user.telegramUsername,
+    telegramLinked: !!user.telegramId,
+    balance: user.balance,
+    bonusBalance: user.bonusBalance || 0,
+    referralCode: user.referralCode,
+    twoFAEnabled: user.twoFAEnabled,
+    verifemail: user.verifemail !== false,
+    language: user.language || 'en'
+  };
+};
 
 const verifyTelegramData = (data) => {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
@@ -68,9 +83,33 @@ const verifyTelegramData = (data) => {
   return true;
 };
 
+export const getCaptchaToken = async (req, res) => {
+  try {
+    const token = jwt.sign({ type: 'captcha' }, process.env.JWT_SECRET, { expiresIn: '10m' });
+    return res.status(200).json({ captchaToken: token });
+  } catch (error) {
+    console.error('[CustomerAuth] getCaptchaToken error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const verifyCaptchaToken = (token) => {
+  if (!token) return false;
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return decoded.type === 'captcha';
+  } catch {
+    return false;
+  }
+};
+
 export const register = async (req, res) => {
   try {
-    const { username, email, password, telegramUsername, referralCode } = req.body;
+    const { username, email, password, telegramUsername, referralCode, captchaToken } = req.body;
+
+    if (!verifyCaptchaToken(captchaToken)) {
+      return res.status(400).json({ message: 'Captcha verification required' });
+    }
 
     if (!username || !email || !password) {
       return res.status(400).json({ message: 'Username, email and password are required' });
@@ -88,27 +127,112 @@ export const register = async (req, res) => {
       return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedUsername = username.trim();
+
     const existing = await CustomerUser.findOne({
-      $or: [{ username: username.trim() }, { email: email.trim().toLowerCase() }]
+      $or: [{ username: normalizedUsername }, { email: normalizedEmail }]
     });
     if (existing) {
       return res.status(409).json({ message: 'Username or email already in use' });
     }
 
-    let referredByUser = null;
-    if (referralCode) {
-      referredByUser = await CustomerUser.findOne({ referralCode: referralCode.toUpperCase() });
+    const usernameTakenInPending = await PendingRegistration.findOne({
+      username: normalizedUsername,
+      email: { $ne: normalizedEmail }
+    });
+    if (usernameTakenInPending) {
+      return res.status(409).json({ message: 'Username or email already in use' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
+    const code = generateCode();
+    const codeHash = await bcrypt.hash(code, 10);
+    const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
+
+    await PendingRegistration.findOneAndUpdate(
+      { email: normalizedEmail },
+      {
+        email: normalizedEmail,
+        username: normalizedUsername,
+        password: hashedPassword,
+        telegramUsername: telegramUsername?.trim() || null,
+        referralCode: referralCode || null,
+        trackingCode: req.body?.trackingCode || null,
+        codeHash,
+        attempts: 0,
+        expiresAt
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    const sent = await sendVerificationEmail(normalizedEmail, code);
+    if (!sent) {
+      return res.status(502).json({ message: 'Could not send verification email. Please try again later.' });
+    }
+
+    return res.status(200).json({
+      message: 'Verification code sent',
+      requiresVerification: true,
+      email: normalizedEmail
+    });
+  } catch (error) {
+    console.error('[CustomerAuth] register error:', error);
+    return res.status(500).json({ message: 'Server error during registration' });
+  }
+};
+
+export const verifyRegistration = async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ message: 'Email and code are required' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const pending = await PendingRegistration.findOne({ email: normalizedEmail });
+
+    if (!pending || pending.expiresAt < new Date()) {
+      if (pending) await PendingRegistration.deleteOne({ _id: pending._id });
+      return res.status(400).json({ message: 'Verification code expired. Please register again.' });
+    }
+
+    if (pending.attempts >= MAX_VERIFY_ATTEMPTS) {
+      await PendingRegistration.deleteOne({ _id: pending._id });
+      return res.status(429).json({ message: 'Too many attempts. Please register again.' });
+    }
+
+    const isMatch = await bcrypt.compare(String(code).trim(), pending.codeHash);
+    if (!isMatch) {
+      pending.attempts += 1;
+      await pending.save();
+      return res.status(401).json({ message: 'Invalid verification code' });
+    }
+
+    const conflict = await CustomerUser.findOne({
+      $or: [{ username: pending.username }, { email: pending.email }]
+    });
+    if (conflict) {
+      await PendingRegistration.deleteOne({ _id: pending._id });
+      return res.status(409).json({ message: 'Username or email already in use' });
+    }
+
+    let referredByUser = null;
+    if (pending.referralCode) {
+      referredByUser = await CustomerUser.findOne({ referralCode: pending.referralCode.toUpperCase() });
+    }
 
     const newUser = await CustomerUser.create({
-      username: username.trim(),
-      email: email.trim().toLowerCase(),
-      password: hashedPassword,
-      telegramUsername: telegramUsername?.trim() || null,
-      referredBy: referredByUser?._id || null
+      username: pending.username,
+      email: pending.email,
+      password: pending.password,
+      telegramUsername: pending.telegramUsername || null,
+      referredBy: referredByUser?._id || null,
+      verifemail: true
     });
+
+    await PendingRegistration.deleteOne({ _id: pending._id });
 
     const token = generateToken(newUser._id);
     const expire = new Date(Date.now() + COOKIE_MAX_AGE);
@@ -132,15 +256,245 @@ export const register = async (req, res) => {
       meta: { customerId: newUser._id, username: newUser.username, uid: newUser.uid }
     });
 
-    attachAcquisition({ user: newUser, code: req.body?.trackingCode, req }).catch(() => {});
+    attachAcquisition({ user: newUser, code: pending.trackingCode, req }).catch(() => {});
 
     return res.status(201).json({
       message: 'Account created successfully',
       user: safeUser(newUser)
     });
   } catch (error) {
-    console.error('[CustomerAuth] register error:', error);
-    return res.status(500).json({ message: 'Server error during registration' });
+    console.error('[CustomerAuth] verifyRegistration error:', error);
+    return res.status(500).json({ message: 'Server error during verification' });
+  }
+};
+
+export const resendRegistrationCode = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const pending = await PendingRegistration.findOne({ email: normalizedEmail });
+
+    if (!pending) {
+      return res.status(404).json({ message: 'No pending registration for this email. Please register again.' });
+    }
+
+    const code = generateCode();
+    pending.codeHash = await bcrypt.hash(code, 10);
+    pending.attempts = 0;
+    pending.expiresAt = new Date(Date.now() + PENDING_TTL_MS);
+    await pending.save();
+
+    const sent = await sendVerificationEmail(normalizedEmail, code);
+    if (!sent) {
+      return res.status(502).json({ message: 'Could not send verification email. Please try again later.' });
+    }
+
+    return res.status(200).json({ message: 'Verification code resent', email: normalizedEmail });
+  } catch (error) {
+    console.error('[CustomerAuth] resendRegistrationCode error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const requestEmailCode = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = req.customer;
+
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({ message: 'A valid email is required' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (isInternalEmail(normalizedEmail)) {
+      return res.status(400).json({ message: 'Invalid email address' });
+    }
+
+    if (!isInternalEmail(user.email) && normalizedEmail === user.email && user.verifemail !== false) {
+      return res.status(400).json({ message: 'This email is already verified on your account' });
+    }
+
+    const taken = await CustomerUser.findOne({ email: normalizedEmail, _id: { $ne: user._id } });
+    if (taken) {
+      return res.status(409).json({ message: 'Email already in use' });
+    }
+
+    const code = generateCode();
+    user.pendingEmail = normalizedEmail;
+    user.emailCodeHash = await bcrypt.hash(code, 10);
+    user.emailCodeExpires = new Date(Date.now() + PENDING_TTL_MS);
+    user.emailCodeAttempts = 0;
+    await user.save();
+
+    const sent = await sendVerificationEmail(normalizedEmail, code);
+    if (!sent) {
+      return res.status(502).json({ message: 'Could not send verification email. Please try again later.' });
+    }
+
+    return res.status(200).json({ message: 'Verification code sent', email: normalizedEmail });
+  } catch (error) {
+    console.error('[CustomerAuth] requestEmailCode error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const confirmEmailCode = async (req, res) => {
+  try {
+    const { code } = req.body;
+    const user = req.customer;
+
+    if (!code) {
+      return res.status(400).json({ message: 'Code is required' });
+    }
+
+    if (!user.pendingEmail || !user.emailCodeHash || !user.emailCodeExpires) {
+      return res.status(400).json({ message: 'No pending email change. Please request a code first.' });
+    }
+
+    if (user.emailCodeExpires < new Date()) {
+      user.pendingEmail = null;
+      user.emailCodeHash = null;
+      user.emailCodeExpires = null;
+      user.emailCodeAttempts = 0;
+      await user.save();
+      return res.status(400).json({ message: 'Code expired. Please request a new one.' });
+    }
+
+    if (user.emailCodeAttempts >= MAX_VERIFY_ATTEMPTS) {
+      user.pendingEmail = null;
+      user.emailCodeHash = null;
+      user.emailCodeExpires = null;
+      user.emailCodeAttempts = 0;
+      await user.save();
+      return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
+    }
+
+    const isMatch = await bcrypt.compare(String(code).trim(), user.emailCodeHash);
+    if (!isMatch) {
+      user.emailCodeAttempts += 1;
+      await user.save();
+      return res.status(401).json({ message: 'Invalid verification code' });
+    }
+
+    const taken = await CustomerUser.findOne({ email: user.pendingEmail, _id: { $ne: user._id } });
+    if (taken) {
+      user.pendingEmail = null;
+      user.emailCodeHash = null;
+      user.emailCodeExpires = null;
+      user.emailCodeAttempts = 0;
+      await user.save();
+      return res.status(409).json({ message: 'Email already in use' });
+    }
+
+    user.email = user.pendingEmail;
+    user.verifemail = true;
+    user.pendingEmail = null;
+    user.emailCodeHash = null;
+    user.emailCodeExpires = null;
+    user.emailCodeAttempts = 0;
+    await user.save();
+
+    return res.status(200).json({ message: 'Email verified', user: safeUser(user) });
+  } catch (error) {
+    console.error('[CustomerAuth] confirmEmailCode error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const forgotPassword = async (req, res) => {
+  const genericResponse = () =>
+    res.status(200).json({ message: 'If an account with that email exists, a reset code has been sent.' });
+
+  try {
+    const { email } = req.body;
+    if (!email || !isValidEmail(email)) {
+      return genericResponse();
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (isInternalEmail(normalizedEmail)) {
+      return genericResponse();
+    }
+
+    const user = await CustomerUser.findOne({ email: normalizedEmail });
+    if (!user || !user.status) {
+      return genericResponse();
+    }
+
+    const code = generateCode();
+    user.resetCodeHash = await bcrypt.hash(code, 10);
+    user.resetCodeExpires = new Date(Date.now() + PENDING_TTL_MS);
+    user.resetCodeAttempts = 0;
+    await user.save();
+
+    await sendPasswordResetEmail(normalizedEmail, code);
+
+    return genericResponse();
+  } catch (error) {
+    console.error('[CustomerAuth] forgotPassword error:', error);
+    return genericResponse();
+  }
+};
+
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, code, newPassword } = req.body;
+
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ message: 'Email, code and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await CustomerUser.findOne({ email: normalizedEmail });
+
+    if (!user || !user.resetCodeHash || !user.resetCodeExpires) {
+      return res.status(400).json({ message: 'Invalid or expired reset code' });
+    }
+
+    if (user.resetCodeExpires < new Date()) {
+      user.resetCodeHash = null;
+      user.resetCodeExpires = null;
+      user.resetCodeAttempts = 0;
+      await user.save();
+      return res.status(400).json({ message: 'Reset code expired. Please request a new one.' });
+    }
+
+    if (user.resetCodeAttempts >= MAX_VERIFY_ATTEMPTS) {
+      user.resetCodeHash = null;
+      user.resetCodeExpires = null;
+      user.resetCodeAttempts = 0;
+      await user.save();
+      return res.status(429).json({ message: 'Too many attempts. Please request a new code.' });
+    }
+
+    const isMatch = await bcrypt.compare(String(code).trim(), user.resetCodeHash);
+    if (!isMatch) {
+      user.resetCodeAttempts += 1;
+      await user.save();
+      return res.status(401).json({ message: 'Invalid reset code' });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 12);
+    user.resetCodeHash = null;
+    user.resetCodeExpires = null;
+    user.resetCodeAttempts = 0;
+    await user.save();
+
+    await CustomerSession.deleteMany({ userId: user._id });
+
+    return res.status(200).json({ message: 'Password has been reset. You can now sign in.' });
+  } catch (error) {
+    console.error('[CustomerAuth] resetPassword error:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -170,6 +524,10 @@ export const login = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (user.verifemail === false && !user.telegramId) {
+      return res.status(403).json({ message: 'Please verify your email before signing in' });
     }
 
     if (user.twoFAEnabled) {
@@ -344,7 +702,7 @@ export const disable2FA = async (req, res) => {
 
 export const updateProfile = async (req, res) => {
   try {
-    const { username, email, telegramUsername, currentPassword, newPassword, language } = req.body;
+    const { username, telegramUsername, currentPassword, newPassword, language } = req.body;
     const user = req.customer;
 
     if (username !== undefined) {
@@ -358,15 +716,6 @@ export const updateProfile = async (req, res) => {
         const taken = await CustomerUser.findOne({ username: username.trim() });
         if (taken) return res.status(409).json({ message: 'Username already taken' });
         user.username = username.trim();
-      }
-    }
-
-    if (email !== undefined) {
-      const normalized = email.trim().toLowerCase();
-      if (normalized !== user.email) {
-        const taken = await CustomerUser.findOne({ email: normalized });
-        if (taken) return res.status(409).json({ message: 'Email already in use' });
-        user.email = normalized;
       }
     }
 
@@ -447,7 +796,8 @@ export const telegramCallback = async (req, res) => {
         password: randomPassword,
         telegramId,
         telegramUsername: tgData.username || null,
-        referredBy: referredByUser?._id || null
+        referredBy: referredByUser?._id || null,
+        verifemail: true
       });
     }
 

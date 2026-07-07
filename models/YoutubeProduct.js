@@ -75,17 +75,27 @@ const youtubeProductSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  wholesale_price: {
-    type: Number,
-    required: false,
-    min: 0,
-    default: null
-  },
-  count_for_wholesale: {
-    type: Number,
-    required: false,
-    min: 0,
-    default: null
+  price_tiers: {
+    type: [{
+      min_qty: { type: Number, required: true, min: 2 },
+      price: { type: Number, required: true, min: 0 }
+    }],
+    default: [],
+    validate: {
+      validator: function(tiers) {
+        if (!Array.isArray(tiers) || tiers.length === 0) return true;
+        let prevQty = 1;
+        let prevPrice = this.price;
+        for (const t of tiers) {
+          if (!(t.min_qty > prevQty)) return false;
+          if (!(t.price < prevPrice)) return false;
+          prevQty = t.min_qty;
+          prevPrice = t.price;
+        }
+        return true;
+      },
+      message: 'Уровни опт. цен должны иметь возрастающее количество и убывающую цену относительно базовой'
+    }
   }
 }, { timestamps: true });
 

@@ -26,6 +26,40 @@ const customerUserSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  verifemail: {
+    type: Boolean,
+    default: true
+  },
+  pendingEmail: {
+    type: String,
+    default: null,
+    trim: true,
+    lowercase: true
+  },
+  emailCodeHash: {
+    type: String,
+    default: null
+  },
+  emailCodeExpires: {
+    type: Date,
+    default: null
+  },
+  emailCodeAttempts: {
+    type: Number,
+    default: 0
+  },
+  resetCodeHash: {
+    type: String,
+    default: null
+  },
+  resetCodeExpires: {
+    type: Date,
+    default: null
+  },
+  resetCodeAttempts: {
+    type: Number,
+    default: 0
+  },
   twoFASecret: {
     type: String,
     default: null
