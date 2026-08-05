@@ -347,6 +347,68 @@ export const staffGetMessages = async (req, res) => {
   }
 };
 
+export const staffStartTicket = async (req, res) => {
+  try {
+    const { customerId } = req.body;
+    if (!isObjId(customerId)) return res.status(400).json({ message: 'Invalid customer' });
+    const customer = await CustomerUser.findById(customerId).select('_id username').lean();
+    if (!customer) return res.status(404).json({ message: 'Customer not found' });
+
+    const text = safeStr(req.body.text, TEXT_MAX);
+    const filesCount = (req.files || []).length;
+    if (!text && filesCount === 0) return res.status(400).json({ message: 'Empty message' });
+
+    let ticket = await SupportTicket.findOne({ customerId, status: { $in: ['open', 'pending'] } }).sort({ lastMessageAt: -1 });
+    let created = false;
+    if (!ticket) {
+      ticket = await SupportTicket.create({
+        customerId,
+        subject: safeStr(req.body.subject, SUBJECT_MAX) || 'Support request',
+        status: 'pending',
+        lastMessageAt: new Date(),
+        lastMessageBy: 'staff',
+        unreadByCustomer: 0,
+        assignedTo: req.user._id,
+        meta: { startedBy: 'staff' }
+      });
+      created = true;
+    }
+
+    const attachments = await uploadAttachments(ticket.uid, req.files || []);
+    const message = await SupportMessage.create({
+      ticketId: ticket._id,
+      senderRole: 'staff',
+      senderId: req.user._id,
+      senderName: req.user.name || 'Support',
+      text,
+      attachments
+    });
+
+    ticket.lastMessageAt = message.createdAt;
+    ticket.lastMessagePreview = buildPreview(text, attachments);
+    ticket.lastMessageBy = 'staff';
+    ticket.unreadByCustomer = (ticket.unreadByCustomer || 0) + 1;
+    if (ticket.status === 'closed') ticket.status = 'pending';
+    if (!ticket.assignedTo) ticket.assignedTo = req.user._id;
+    await ticket.save();
+
+    const populated = await populateTicketForList(SupportTicket.findById(ticket._id)).lean();
+    if (created) {
+      io.of('/support').to(STAFF_ROOM).emit('ticket:created', { ticket: populated });
+      io.of('/support').to(customerRoom(customerId)).emit('ticket:created', { ticket: populated });
+    }
+    io.of('/support').to(ticketRoom(ticket._id)).emit('message:new', { message: message.toObject() });
+    io.of('/support').to(STAFF_ROOM).emit('message:new', { message: message.toObject() });
+    io.of('/support').to(customerRoom(customerId)).emit('message:new', { message: message.toObject() });
+    emitTicketUpdate(populated);
+
+    res.status(201).json({ ticket: populated, message });
+  } catch (e) {
+    console.error('[support] staffStartTicket', e);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export const staffSendMessage = async (req, res) => {
   try {
     if (!isObjId(req.params.id)) return res.status(404).json({ message: 'Ticket not found' });

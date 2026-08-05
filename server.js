@@ -14,6 +14,7 @@ import GoogleAdsProduct from './models/GoogleAdsProduct.js';
 import YoutubeProduct from './models/YoutubeProduct.js';
 import DigitalItem from './models/DigitalItem.js';
 import Order from './models/Order.js';
+import Preorder from './models/Preorder.js';
 import CryptoCloudInvoice from './models/CryptoCloudInvoice.js';
 import { syncManyProductCounts } from './utils/syncProductCounts.js';
 import fs from 'fs';
@@ -240,6 +241,7 @@ mongoose.connect(process.env.MONGO_URI)
     await migrateProductUids();
     await migrateServiceUids();
     await migrateProductGeos();
+    await migrateManualTags();
     await migrateCustomerVerifEmail();
     cleanOldReplacePhotos();
   })
@@ -300,6 +302,19 @@ async function migrateServiceUids() {
     if (noUid.length > 0) console.log(`[migrate] Added uid to ${noUid.length} services`);
   } catch (e) {
     console.error('[migrate] migrateServiceUids error:', e.message);
+  }
+}
+
+async function migrateManualTags() {
+  try {
+    const { default: Manual } = await import('./models/Manual.js');
+    const result = await Manual.collection.updateMany(
+      { tag_id: { $exists: true, $ne: null }, $or: [{ tag_ids: { $exists: false } }, { tag_ids: { $size: 0 } }] },
+      [{ $set: { tag_ids: ['$tag_id'] } }]
+    );
+    if (result.modifiedCount > 0) console.log(`[migrate] Copied tag_id -> tag_ids for ${result.modifiedCount} manuals`);
+  } catch (e) {
+    console.error('[migrate] migrateManualTags error:', e.message);
   }
 }
 
@@ -436,8 +451,18 @@ async function releaseExpiredReservations() {
       { $set: { status: 'cancelled' } }
     );
 
-    if (releasedCount || staleInvoices.modifiedCount || staleOrders.modifiedCount) {
-      console.log(`[cleanup] Released ${releasedCount} reserved items, cancelled ${cancelledOrdersCount + staleOrders.modifiedCount} CC orders, ${staleInvoices.modifiedCount} stale invoices`);
+    const stalePreorders = await Preorder.updateMany(
+      {
+        paymentStatus: 'unpaid',
+        paymentMethod: 'cryptocloud',
+        status: { $nin: ['completed', 'cancelled'] },
+        createdAt: { $lt: cutoff }
+      },
+      { $set: { status: 'cancelled' } }
+    );
+
+    if (releasedCount || staleInvoices.modifiedCount || staleOrders.modifiedCount || stalePreorders.modifiedCount) {
+      console.log(`[cleanup] Released ${releasedCount} reserved items, cancelled ${cancelledOrdersCount + staleOrders.modifiedCount} CC orders, ${stalePreorders.modifiedCount} stale preorders, ${staleInvoices.modifiedCount} stale invoices`);
     }
   } catch (e) {
     console.error('[cleanup] releaseExpiredReservations error:', e.message);

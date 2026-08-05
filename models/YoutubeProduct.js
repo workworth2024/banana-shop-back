@@ -75,6 +75,13 @@ const youtubeProductSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  /** Позиция товара в каталоге: меньше = выше. Товары без ручной позиции (1000000) идут после, отсортированные по новизне */
+  sort_order: {
+    type: Number,
+    default: 1000000,
+    min: 0,
+    index: true
+  },
   price_tiers: {
     type: [{
       min_qty: { type: Number, required: true, min: 2 },

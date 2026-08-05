@@ -1,6 +1,7 @@
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import Transaction from '../models/Transaction.js';
+import CryptoCloudInvoice from '../models/CryptoCloudInvoice.js';
 import Notification from '../models/Notification.js';
 import Order from '../models/Order.js';
 import Preorder from '../models/Preorder.js';
@@ -322,8 +323,26 @@ export const getAdminTransactions = async (req, res) => {
 
     const total = await Transaction.countDocuments(query);
 
+    const payTypes = ['order', 'preorder', 'service_order', 'deposit_cash'];
+    const uids = transactions.filter(t => payTypes.includes(t.type)).map(t => t.uid).filter(Boolean);
+    let payLinkByUid = {};
+    if (uids.length) {
+      const invoices = await CryptoCloudInvoice.find({ transactionUid: { $in: uids }, payLink: { $ne: '' } })
+        .select('transactionUid payLink')
+        .lean();
+      payLinkByUid = invoices.reduce((acc, inv) => {
+        acc[inv.transactionUid] = inv.payLink;
+        return acc;
+      }, {});
+    }
+    const transactionsWithLinks = transactions.map(t => {
+      const obj = t.toObject();
+      obj.payLink = payLinkByUid[t.uid] || null;
+      return obj;
+    });
+
     return res.status(200).json({
-      transactions,
+      transactions: transactionsWithLinks,
       total,
       pages: Math.ceil(total / Number(limit)),
       currentPage: Number(page)

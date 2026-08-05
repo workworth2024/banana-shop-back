@@ -37,6 +37,14 @@ const setAuthCookie = (res, token) => {
   });
 };
 
+// Telegram-аватарки отдаём через свой origin (/tgpic/ проксируется nginx на t.me):
+// прямые ссылки на t.me часто блокируются провайдерами и умирают по hotlink-политике
+const telegramAvatarPath = (photoUrl) => {
+  const match = /^https:\/\/t\.me\/i\/userpic\/([A-Za-z0-9._/-]+)$/.exec(String(photoUrl || ''));
+  if (!match || match[1].includes('..')) return '';
+  return `/tgpic/${match[1]}`;
+};
+
 const safeUser = (user) => {
   const internal = isInternalEmail(user.email);
   return {
@@ -47,6 +55,7 @@ const safeUser = (user) => {
     emailVerified: !internal && user.verifemail !== false,
     telegramUsername: user.telegramUsername,
     telegramLinked: !!user.telegramId,
+    avatarUrl: telegramAvatarPath(user.telegramPhotoUrl),
     balance: user.balance,
     bonusBalance: user.bonusBalance || 0,
     referralCode: user.referralCode,
@@ -796,6 +805,7 @@ export const telegramCallback = async (req, res) => {
         password: randomPassword,
         telegramId,
         telegramUsername: tgData.username || null,
+        telegramPhotoUrl: tgData.photo_url || null,
         referredBy: referredByUser?._id || null,
         verifemail: true
       });
@@ -803,6 +813,13 @@ export const telegramCallback = async (req, res) => {
 
     if (!user.status) {
       return res.status(403).json({ message: 'Account is disabled' });
+    }
+
+    // Аватарка в TG могла поменяться — обновляем на каждом входе
+    if (!isNewUser && (tgData.photo_url || '') !== (user.telegramPhotoUrl || '')) {
+      user.telegramPhotoUrl = tgData.photo_url || null;
+      if (tgData.username) user.telegramUsername = tgData.username;
+      await user.save();
     }
 
     const token = generateToken(user._id);
@@ -854,6 +871,7 @@ export const linkTelegram = async (req, res) => {
     const user = req.customer;
     user.telegramId = telegramId;
     if (tgData.username) user.telegramUsername = tgData.username;
+    user.telegramPhotoUrl = tgData.photo_url || null;
     await user.save();
 
     return res.status(200).json({ message: 'Telegram linked successfully', user: safeUser(user) });
@@ -871,7 +889,7 @@ export const unlinkTelegram = async (req, res) => {
     }
     const updated = await CustomerUser.findByIdAndUpdate(
       user._id,
-      { $unset: { telegramId: 1, telegramUsername: 1 } },
+      { $unset: { telegramId: 1, telegramUsername: 1, telegramPhotoUrl: 1 } },
       { returnDocument: 'after' }
     );
     return res.status(200).json({ message: 'Telegram unlinked', user: safeUser(updated) });

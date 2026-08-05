@@ -19,6 +19,7 @@ import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts, syncManyProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
@@ -485,7 +486,7 @@ export const checkoutPreorder = async (req, res) => {
   try {
     if (!getApiKey() || !getShopId()) return res.status(500).json({ message: 'CryptoCloud is not configured' });
 
-    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo } = req.body;
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo, geoBreakdown } = req.body;
 
     let product = null;
     let productType = 'google';
@@ -506,19 +507,42 @@ export const checkoutPreorder = async (req, res) => {
     }
 
     if (!product) return res.status(404).json({ message: 'Товар не найден' });
-    if (!name || !telegram || desired_quantity === undefined || desired_quantity === null) {
-      return res.status(400).json({ message: 'Обязательные поля: name, telegram, desired_quantity' });
+    if (!name || !telegram) {
+      return res.status(400).json({ message: 'Обязательные поля: name, telegram' });
     }
-
-    const geoCode = String(geo || '').trim().toUpperCase();
-    if (!geoCode || !isValidGeo(geoCode)) return res.status(400).json({ message: 'Выберите гео для предзаказа' });
 
     const productGeoCodes = (product.geos || []).map(g => g.code);
-    if (productGeoCodes.length && !productGeoCodes.includes(geoCode)) {
-      return res.status(400).json({ message: `Гео ${geoCode} недоступно для этого товара` });
+
+    let breakdown = [];
+    if (Array.isArray(geoBreakdown) && geoBreakdown.length) {
+      breakdown = geoBreakdown
+        .map(g => ({
+          geo: String(g?.geo || '').trim().toUpperCase(),
+          quantity: Math.max(1, Math.min(500, parseInt(g?.quantity, 10) || 0))
+        }))
+        .filter(g => g.geo && g.quantity > 0);
+    } else if (geo) {
+      const geoCode = String(geo || '').trim().toUpperCase();
+      const q = Math.max(1, Math.min(500, parseInt(desired_quantity, 10) || 1));
+      if (geoCode) breakdown = [{ geo: geoCode, quantity: q }];
     }
 
-    const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10) || 1));
+    if (!breakdown.length) return res.status(400).json({ message: 'Выберите гео для предзаказа' });
+    for (const g of breakdown) {
+      if (!isValidGeo(g.geo)) return res.status(400).json({ message: `Некорректное гео ${g.geo}` });
+      if (productGeoCodes.length && !productGeoCodes.includes(g.geo)) {
+        return res.status(400).json({ message: `Гео ${g.geo} недоступно для этого товара` });
+      }
+    }
+    const seenGeos = new Set();
+    for (const g of breakdown) {
+      if (seenGeos.has(g.geo)) return res.status(400).json({ message: `Гео ${g.geo} указано дважды` });
+      seenGeos.add(g.geo);
+    }
+
+    const qty = breakdown.reduce((s, g) => s + g.quantity, 0);
+    if (qty <= 0 || qty > 500) return res.status(400).json({ message: 'Некорректное количество' });
+    const geoCode = breakdown.map(g => g.geo).join(', ');
     const unitPrice = getEffectiveUnitPrice(product, qty);
     if (unitPrice <= 0) return res.status(400).json({ message: 'Предзаказ этого товара временно недоступен' });
 
@@ -532,6 +556,7 @@ export const checkoutPreorder = async (req, res) => {
       productType,
       customerId: req.customer._id,
       geo: geoCode,
+      geoBreakdown: breakdown,
       name: String(name).trim().slice(0, 200),
       telegram: String(telegram).trim().slice(0, 100),
       desired_quantity: qty,
@@ -561,6 +586,7 @@ export const checkoutPreorder = async (req, res) => {
         desired_quantity: qty,
         comment: comment ? String(comment).trim().slice(0, 1000) : '',
         geo: geoCode,
+        geoBreakdown: breakdown,
         unitPrice,
         totalAmount
       }
@@ -733,6 +759,8 @@ async function fulfillProductsOrCart(invoice) {
       productType: it.productType
     }).catch(() => {});
 
+    grantAnalyzerCredits({ customerId: invoice.customerId, qty: it.quantity }).catch(() => {});
+
     const notif = await Notification.create({
       userId: invoice.customerId,
       type: 'order_delivered',
@@ -803,6 +831,8 @@ async function fulfillService(invoice) {
     orderUid: order.uid
   }).catch(() => {});
 
+  grantAnalyzerCredits({ customerId: invoice.customerId, qty: 1 }).catch(() => {});
+
   invoice.transactionUid = tx.uid;
 
   const customer = await CustomerUser.findById(invoice.customerId);
@@ -856,6 +886,7 @@ async function fulfillPreorder(invoice) {
       productType: p.productType,
       customerId: invoice.customerId,
       geo: p.geo,
+      geoBreakdown: p.geoBreakdown || [],
       name: p.name,
       telegram: p.telegram,
       desired_quantity: p.desired_quantity,
@@ -896,6 +927,8 @@ async function fulfillPreorder(invoice) {
     orderUid: preorder.uid,
     productType: p.productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
   }).catch(() => {});
+
+  grantAnalyzerCredits({ customerId: invoice.customerId, qty: p.desired_quantity }).catch(() => {});
 
   const customer = await CustomerUser.findById(invoice.customerId);
 

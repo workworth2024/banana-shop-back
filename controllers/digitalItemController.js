@@ -17,6 +17,7 @@ import { isValidGeo } from '../utils/geos.js';
 import { syncProductCounts } from '../utils/syncProductCounts.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
 
 const getProductModel = (productType) => {
@@ -406,6 +407,8 @@ export const purchaseProduct = async (req, res) => {
       orderUid: order.uid,
       productType
     }).catch(() => {});
+
+    grantAnalyzerCredits({ customerId, qty }).catch(() => {});
 
     const notif = await Notification.create({
       userId: customerId,

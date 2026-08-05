@@ -1,7 +1,25 @@
+import mongoose from 'mongoose';
 import Manual from '../models/Manual.js';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile, extractImageUrls } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+
+const MAX_TAGS = 10;
+
+/** Принимает JSON-строку/массив/CSV из FormData, возвращает массив валидных ObjectId (или undefined, если поле не передано) */
+const parseTagIds = (raw) => {
+  if (raw === undefined) return undefined;
+  let list = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try { list = JSON.parse(s); } catch { list = s.split(','); }
+  }
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map(v => String(v).trim()))]
+    .filter(v => mongoose.isValidObjectId(v))
+    .slice(0, MAX_TAGS);
+};
 
 const deleteManualFile = (urlOrPath) => {
   if (!urlOrPath) return;
@@ -31,7 +49,7 @@ export const getManuals = async (req, res) => {
     }
 
     if (filter) query.filter_id = filter;
-    if (tag) query.tag_id = tag;
+    if (tag) query.$and = [{ $or: [{ tag_ids: tag }, { tag_id: tag }] }];
 
     if (startDate || endDate) {
       query.createdAt = {};
@@ -47,6 +65,7 @@ export const getManuals = async (req, res) => {
     const manuals = await Manual.find(query)
       .populate('filter_id')
       .populate('tag_id')
+      .populate('tag_ids')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -70,8 +89,16 @@ export const createManual = async (req, res) => {
     const manualData = { title, desc, link, content, path_to_file };
     const filterId = req.body.filter_id;
     if (filterId && filterId.trim()) manualData.filter_id = filterId;
+
+    const tagIds = parseTagIds(req.body.tag_ids);
     const tagId = req.body.tag_id;
-    if (tagId && tagId.trim()) manualData.tag_id = tagId;
+    if (tagIds !== undefined) {
+      manualData.tag_ids = tagIds;
+      if (tagIds.length) manualData.tag_id = tagIds[0];
+    } else if (tagId && tagId.trim()) {
+      manualData.tag_id = tagId;
+      manualData.tag_ids = [tagId];
+    }
 
     const manual = await Manual.create(manualData);
     res.status(201).json(manual);
@@ -96,8 +123,16 @@ export const updateManual = async (req, res) => {
 
     const filterId = req.body.filter_id;
     updateData.filter_id = (filterId && filterId.trim()) ? filterId : null;
+
+    const tagIds = parseTagIds(req.body.tag_ids);
     const tagId = req.body.tag_id;
-    updateData.tag_id = (tagId && tagId.trim()) ? tagId : null;
+    if (tagIds !== undefined) {
+      updateData.tag_ids = tagIds;
+      updateData.tag_id = tagIds.length ? tagIds[0] : null;
+    } else {
+      updateData.tag_id = (tagId && tagId.trim()) ? tagId : null;
+      updateData.tag_ids = (tagId && tagId.trim()) ? [tagId] : [];
+    }
 
     if (req.body['title.ru'] || req.body['title.en']) {
       updateData.title = { ru: req.body['title.ru'] || '', en: req.body['title.en'] || '' };
@@ -154,7 +189,7 @@ export const deleteManual = async (req, res) => {
 
 export const getManualById = async (req, res) => {
   try {
-    const manual = await Manual.findById(req.params.id).populate('filter_id').populate('tag_id');
+    const manual = await Manual.findById(req.params.id).populate('filter_id').populate('tag_id').populate('tag_ids');
     if (!manual) return res.status(404).json({ message: 'Manual not found' });
     res.json(manual);
   } catch (error) {

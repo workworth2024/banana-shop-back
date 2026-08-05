@@ -8,7 +8,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['order_delivered', 'order_status', 'order_replaced', 'order_refunded', 'balance_updated', 'preorder_status', 'service_order_status', 'system'],
+    enum: ['order_delivered', 'order_status', 'order_replaced', 'order_refunded', 'balance_updated', 'preorder_status', 'preorder_refunded', 'preorder_paid', 'service_order_status', 'service_order_refunded', 'service_order_paid', 'system'],
     default: 'system'
   },
   title: {

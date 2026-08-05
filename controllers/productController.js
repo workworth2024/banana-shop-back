@@ -7,6 +7,7 @@ import { escapeRegex } from '../utils/safeQuery.js';
 import { sanitizeGeos } from '../utils/geos.js';
 import { syncProductCounts } from '../utils/syncProductCounts.js';
 import { parsePriceTiers } from '../utils/pricing.js';
+import { io } from '../server.js';
 
 const parseGeosFromBody = (body) => {
   let raw = body.geos;
@@ -126,6 +127,47 @@ const uploadProductImage = async (file) => {
   return getBunnyPublicUrl(remotePath);
 };
 
+const parseImagesOrderFromBody = (body) => {
+  let raw = body.imagesOrder;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = []; }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map(v => String(v)).filter(Boolean);
+};
+
+/**
+ * Собирает итоговый массив path_images из существующих изображений и новых файлов,
+ * сохраняя порядок, заданный админкой (imagesOrder), где новые файлы помечены как __new__:<index>.
+ * Первый элемент массива считается обложкой (главным фото).
+ */
+const buildPathImages = async (req, existingImages) => {
+  const files = req.files || [];
+  const order = parseImagesOrderFromBody(req.body);
+  const uploadedUrls = await Promise.all(files.map(f => uploadProductImage(f)));
+
+  let path_images;
+  if (order.length) {
+    const existingSet = new Set(existingImages || []);
+    path_images = order
+      .map(entry => {
+        if (entry.startsWith('__new__:')) {
+          const idx = parseInt(entry.split(':')[1], 10);
+          return Number.isInteger(idx) ? uploadedUrls[idx] : null;
+        }
+        return existingSet.has(entry) ? entry : null;
+      })
+      .filter(Boolean);
+  } else {
+    path_images = [...(existingImages || []), ...uploadedUrls];
+  }
+
+  const removed = (existingImages || []).filter(u => !path_images.includes(u));
+  removed.forEach(deleteProductImage);
+
+  return path_images;
+};
+
 // Youtube Products
 export const getYoutubeProducts = async (req, res) => {
   try {
@@ -140,7 +182,7 @@ export const getYoutubeProducts = async (req, res) => {
     const { pageNum, limitNum, skip } = parseProductListPaging(req.query);
     const products = await YoutubeProduct.find(query)
       .populate('filter_id')
-      .sort({ createdAt: -1 })
+      .sort({ sort_order: 1, createdAt: -1 })
       .skip(skip)
       .limit(limitNum);
 
@@ -300,7 +342,8 @@ export const getGoogleAdsProducts = async (req, res) => {
     const sortStage =
       sortMode === 'price_asc' ? { price: 1 } :
       sortMode === 'price_desc' ? { price: -1 } :
-      { createdAt: -1 };
+      sortMode === 'newest' ? { createdAt: -1 } :
+      { sort_order: 1, createdAt: -1 };
 
     const { pageNum, limitNum, skip } = parseProductListPaging(req.query);
     const products = await GoogleAdsProduct.find(query)
@@ -310,7 +353,16 @@ export const getGoogleAdsProducts = async (req, res) => {
       .limit(limitNum);
 
     const total = await GoogleAdsProduct.countDocuments(query);
-    const availableTypes = await GoogleAdsProduct.distinct('type');
+    // Типы в порядке лучшей позиции их товаров, чтобы группы на витрине следовали ручному порядку
+    const typeAgg = await GoogleAdsProduct.aggregate([
+      { $group: {
+        _id: '$type',
+        minOrder: { $min: { $ifNull: ['$sort_order', 1000000] } },
+        newest: { $max: '$createdAt' }
+      } },
+      { $sort: { minOrder: 1, newest: -1 } }
+    ]);
+    const availableTypes = typeAgg.map(t => t._id).filter(Boolean);
     const availableGeos = await GoogleAdsProduct.distinct('geos.code');
 
     const priceRangeAgg = await GoogleAdsProduct.aggregate([
@@ -377,11 +429,12 @@ export const createGoogleAdsProduct = async (req, res) => {
     const payment = { ru: req.body['payment.ru'] || '', en: req.body['payment.en'] || '' };
     const features = parseFeaturesFromBody(req.body);
 
-    const path_image = req.file ? await uploadProductImage(req.file) : '';
+    const path_images = await buildPathImages(req, []);
+    const path_image = path_images[0] || '';
     const geos = mergeGeoCounts(parseGeosFromBody(req.body), []);
     const counts = 0;
 
-    const productData = { type, title, sub_title, desc, inclusive, receive, payment, features, price, counts, geos, path_image, link, price_tiers };
+    const productData = { type, title, sub_title, desc, inclusive, receive, payment, features, price, counts, geos, path_image, path_images, link, price_tiers };
     productData.templateIds = parseIdArrayFromBody(req.body.templateIds);
     productData.serviceIds = parseIdArrayFromBody(req.body.serviceIds);
     const filterId = req.body.filter_id;
@@ -398,7 +451,7 @@ export const updateGoogleAdsProduct = async (req, res) => {
   try {
     const { id } = req.params;
     const { type, price } = req.body;
-    const existing = await GoogleAdsProduct.findById(id).select('geos path_image');
+    const existing = await GoogleAdsProduct.findById(id).select('geos path_image path_images');
     const geos = mergeGeoCounts(parseGeosFromBody(req.body), existing?.geos);
     let price_tiers;
     try {
@@ -441,9 +494,13 @@ export const updateGoogleAdsProduct = async (req, res) => {
       updateData.serviceIds = parseIdArrayFromBody(req.body.serviceIds);
     }
 
-    if (req.file) {
-      deleteProductImage(existing?.path_image);
-      updateData.path_image = await uploadProductImage(req.file);
+    if (req.body.imagesOrder !== undefined || (req.files && req.files.length)) {
+      const existingImages = (existing?.path_images && existing.path_images.length)
+        ? existing.path_images
+        : (existing?.path_image ? [existing.path_image] : []);
+      const path_images = await buildPathImages(req, existingImages);
+      updateData.path_images = path_images;
+      updateData.path_image = path_images[0] || '';
     }
 
     await GoogleAdsProduct.findByIdAndUpdate(id, updateData);
@@ -458,9 +515,65 @@ export const updateGoogleAdsProduct = async (req, res) => {
 export const deleteGoogleAdsProduct = async (req, res) => {
   try {
     const product = await GoogleAdsProduct.findByIdAndDelete(req.params.id);
-    deleteProductImage(product?.path_image);
+    const images = (product?.path_images && product.path_images.length)
+      ? product.path_images
+      : (product?.path_image ? [product.path_image] : []);
+    images.forEach(deleteProductImage);
     res.json({ message: 'Google Ads product deleted' });
   } catch (error) {
     res.status(500).json({ message: 'Error deleting Google Ads product' });
   }
 };
+
+// ===== Конструктор позиций товаров =====
+
+const MAX_POSITIONS = 500;
+
+/** Лёгкий список всех товаров для конструктора позиций (без пагинации, минимум полей) */
+const makeGetPositions = (Model) => async (req, res) => {
+  try {
+    const products = await Model.find({})
+      .select('uid type title price path_image counts sort_order filter_id')
+      .populate('filter_id', 'name color')
+      .sort({ sort_order: 1, createdAt: -1 })
+      .limit(MAX_POSITIONS)
+      .lean();
+    res.json({ products, total: products.length });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching product positions' });
+  }
+};
+
+/** Принимает упорядоченный массив id и присваивает sort_order = позиция (1..N) */
+const makeReorderProducts = (Model, productType) => async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body?.order) ? req.body.order : [];
+    const ids = [...new Set(raw.map(v => String(v).trim()))]
+      .filter(v => mongoose.isValidObjectId(v))
+      .slice(0, MAX_POSITIONS);
+    if (!ids.length) {
+      return res.status(400).json({ message: 'Order list is empty or invalid' });
+    }
+    const ops = ids.map((id, idx) => ({
+      updateOne: {
+        filter: { _id: id },
+        update: { $set: { sort_order: idx + 1 } }
+      }
+    }));
+    const result = await Model.bulkWrite(ops, { ordered: false });
+    // Товары без поля sort_order (созданные до фичи) не должны всплывать выше ранжированных
+    await Model.updateMany({ sort_order: { $exists: false } }, { $set: { sort_order: 1000000 } });
+    // Витрина подхватывает новый порядок в реальном времени
+    try {
+      io.of('/customer').emit('products_reordered', { productType });
+    } catch (_) {}
+    res.json({ message: 'Positions updated', updated: result.modifiedCount ?? 0, total: ids.length });
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating product positions' });
+  }
+};
+
+export const getYoutubePositions = makeGetPositions(YoutubeProduct);
+export const reorderYoutubeProducts = makeReorderProducts(YoutubeProduct, 'YoutubeProduct');
+export const getGoogleAdsPositions = makeGetPositions(GoogleAdsProduct);
+export const reorderGoogleAdsProducts = makeReorderProducts(GoogleAdsProduct, 'GoogleAdsProduct');

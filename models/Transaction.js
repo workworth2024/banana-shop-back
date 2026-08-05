@@ -15,7 +15,7 @@ const transactionSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['deposit_cash', 'deposit_admin', 'withdraw_admin', 'order', 'preorder', 'service_order', 'referral_reward', 'referral_clawback'],
+    enum: ['deposit_cash', 'deposit_admin', 'withdraw_admin', 'order', 'preorder', 'service_order', 'white_page_order', 'referral_reward', 'referral_clawback', 'refund'],
     required: true
   },
   status: {

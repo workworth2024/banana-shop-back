@@ -4,7 +4,8 @@ import {
   createPreorder,
   getPreorders, updatePreorderStatus, deletePreorder,
   uploadPreorderFiles, deletePreorderFile,
-  getMyPreorders, downloadMyPreorderFile
+  getMyPreorders, downloadMyPreorderFile,
+  processPreorderRefund
 } from '../../controllers/preorderController.js';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
@@ -33,6 +34,7 @@ router.post('/', verifyCustomer, preorderCreateLimiter, createPreorder);
 
 router.get('/', verifyToken, canManage, getPreorders);
 router.put('/:id/status', verifyToken, canManage, updatePreorderStatus);
+router.post('/:id/refund', verifyToken, canManage, processPreorderRefund);
 router.post('/:id/files', verifyToken, canManage, uploadPreorder.array('files', 50), uploadPreorderFiles);
 router.delete('/:id/files/:fileId', verifyToken, canManage, deletePreorderFile);
 router.delete('/:id', verifyToken, canManage, deletePreorder);

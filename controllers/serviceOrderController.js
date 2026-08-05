@@ -7,8 +7,10 @@ import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
-import { creditReferralReward } from '../utils/referral.js';
+import { creditReferralReward, clawbackReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
+import { escapeRegex } from '../utils/safeQuery.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -159,6 +161,8 @@ export const createServiceOrder = async (req, res) => {
         orderUid: order.uid
       }).catch(() => {});
 
+      grantAnalyzerCredits({ customerId, qty: 1 }).catch(() => {});
+
       io.of('/customer').to(`customer:${String(customerId)}`).emit('balance_updated', {
         balance: customer.balance,
         bonusBalance: customer.bonusBalance
@@ -263,11 +267,23 @@ export const getAllServiceOrders = async (req, res) => {
     const { page = 1, limit = 20, search = '', status = '', startDate, endDate } = req.query;
     const query = {};
     if (search) {
-      const safe = String(search).slice(0, 100);
-      query.$or = [
+      const safe = escapeRegex(String(search).slice(0, 100));
+      const orConditions = [
         { uid: { $regex: safe, $options: 'i' } },
         { 'serviceSnapshot.title': { $regex: safe, $options: 'i' } }
       ];
+
+      const matchingCustomers = await CustomerUser.find({
+        $or: [
+          { username: { $regex: safe, $options: 'i' } },
+          { uid: { $regex: safe, $options: 'i' } }
+        ]
+      }).select('_id').limit(50);
+      if (matchingCustomers.length) {
+        orConditions.push({ customerId: { $in: matchingCustomers.map(c => c._id) } });
+      }
+
+      query.$or = orConditions;
     }
     if (status) query.status = status;
     if (startDate || endDate) {
@@ -311,6 +327,73 @@ export const updateServiceOrderStatus = async (req, res) => {
     await sendStatusNotif(order);
     return res.json(order);
   } catch (err) {
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const processServiceOrderRefund = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    const order = await ServiceOrder.findById(req.params.id);
+    if (!order) return res.status(404).json({ message: 'Заявка не найдена' });
+
+    const totalAmount = order.amountPaid || 0;
+    const alreadyRefunded = order.refundedAmount || 0;
+    const remaining = parseFloat((totalAmount - alreadyRefunded).toFixed(2));
+
+    if (order.status === 'cancelled' || remaining <= 0) {
+      return res.status(400).json({ message: 'Заявка уже полностью возвращена' });
+    }
+
+    let refundAmount = parseFloat(amount);
+    if (!Number.isFinite(refundAmount) || refundAmount <= 0) refundAmount = remaining;
+    refundAmount = Math.min(parseFloat(refundAmount.toFixed(2)), remaining);
+
+    const customer = await CustomerUser.findByIdAndUpdate(
+      order.customerId,
+      { $inc: { balance: refundAmount } },
+      { returnDocument: 'after' }
+    );
+    if (!customer) return res.status(404).json({ message: 'Покупатель не найден' });
+
+    await Transaction.create({
+      userId: order.customerId,
+      type: 'refund',
+      status: 'success',
+      amount: refundAmount,
+      currency: order.currency || 'USD',
+      note: `Возврат по заявке на услугу ${order.uid}`
+    });
+
+    order.refundedAmount = parseFloat((alreadyRefunded + refundAmount).toFixed(2));
+    const fullyRefunded = order.refundedAmount >= totalAmount;
+    if (fullyRefunded) order.status = 'cancelled';
+    await order.save();
+
+    if (fullyRefunded) {
+      clawbackReferralReward({ orderId: order._id, orderType: 'service_order' }).catch(() => {});
+    }
+
+    const notif = await Notification.create({
+      userId: order.customerId,
+      type: 'service_order_refunded',
+      title: { ru: 'Возврат средств', en: 'Refund issued' },
+      message: {
+        ru: `По заявке ${order.uid} возвращено $${refundAmount.toFixed(2)}`,
+        en: `Service order ${order.uid} refunded $${refundAmount.toFixed(2)}`
+      },
+      link: `/profile/service-orders?search=${order.uid}`
+    });
+
+    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
+    io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
+      id: notif._id, type: notif.type, title: notif.title,
+      message: notif.message, link: notif.link, createdAt: notif.createdAt
+    });
+
+    return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, order });
+  } catch (err) {
+    console.error('[ServiceOrder] processServiceOrderRefund error:', err);
     return res.status(500).json({ message: 'Server error' });
   }
 };

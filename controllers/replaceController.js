@@ -247,16 +247,28 @@ export const processReplacement = async (req, res) => {
 
 export const processRefund = async (req, res) => {
   try {
+    const { quantity } = req.body;
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: 'Заказ не найден' });
 
-    if (order.status === 'cancelled') {
-      return res.status(400).json({ message: 'Заказ уже отменён' });
+    const totalQty = order.quantity || 1;
+    const alreadyRefundedQty = order.refundedQuantity || 0;
+    const remainingQty = totalQty - alreadyRefundedQty;
+
+    if (order.status === 'cancelled' || remainingQty <= 0) {
+      return res.status(400).json({ message: 'Заказ уже полностью возвращён' });
     }
+
+    let qty = parseInt(quantity, 10);
+    if (!Number.isFinite(qty) || qty <= 0) qty = remainingQty;
+    qty = Math.min(qty, remainingQty);
+
+    const unitPrice = order.amount / totalQty;
+    const refundAmount = parseFloat((unitPrice * qty).toFixed(2));
 
     const customer = await CustomerUser.findByIdAndUpdate(
       order.customerId,
-      { $inc: { balance: order.amount } },
+      { $inc: { balance: refundAmount } },
       { returnDocument: 'after' }
     );
 
@@ -264,25 +276,30 @@ export const processRefund = async (req, res) => {
 
     await Transaction.create({
       userId: order.customerId,
-      type: 'deposit_admin',
+      type: 'refund',
       status: 'success',
-      amount: order.amount,
+      amount: refundAmount,
       currency: order.currency || 'USD',
-      note: `Возврат по заказу ${order.uid}`
+      note: `Возврат по заказу ${order.uid} (${qty}/${totalQty} шт.)`
     });
 
-    order.status = 'cancelled';
+    order.refundedQuantity = alreadyRefundedQty + qty;
+    order.refundedAmount = parseFloat(((order.refundedAmount || 0) + refundAmount).toFixed(2));
+    const fullyRefunded = order.refundedQuantity >= totalQty;
+    if (fullyRefunded) order.status = 'cancelled';
     await order.save();
 
-    clawbackReferralReward({ orderId: order._id, orderType: 'order' }).catch(() => {});
+    if (fullyRefunded) {
+      clawbackReferralReward({ orderId: order._id, orderType: 'order' }).catch(() => {});
+    }
 
     const notif = await Notification.create({
       userId: order.customerId,
       type: 'order_refunded',
       title: { ru: 'Возврат средств', en: 'Refund issued' },
       message: {
-        ru: `По заказу ${order.uid} возвращено $${order.amount.toFixed(2)}`,
-        en: `Order ${order.uid} refunded $${order.amount.toFixed(2)}`
+        ru: `По заказу ${order.uid} возвращено $${refundAmount.toFixed(2)}`,
+        en: `Order ${order.uid} refunded $${refundAmount.toFixed(2)}`
       },
       link: `/profile/orders?search=${order.uid}`
     });
@@ -293,7 +310,7 @@ export const processRefund = async (req, res) => {
       message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
-    return res.status(200).json({ message: `Возврат $${order.amount.toFixed(2)} выполнен`, order });
+    return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, order });
   } catch (error) {
     console.error('[Replace] processRefund error:', error);
     return res.status(500).json({ message: 'Server error' });

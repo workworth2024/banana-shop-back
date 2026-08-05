@@ -83,6 +83,10 @@ const googleAdsProductSchema = new mongoose.Schema({
     type: String,
     required: false
   },
+  path_images: {
+    type: [String],
+    default: []
+  },
   counts: {
     type: Number,
     required: false,
@@ -112,6 +116,13 @@ const googleAdsProductSchema = new mongoose.Schema({
   link: {
     type: String,
     default: ''
+  },
+  /** Позиция товара в каталоге: меньше = выше. Товары без ручной позиции (1000000) идут после, отсортированные по новизне */
+  sort_order: {
+    type: Number,
+    default: 1000000,
+    min: 0,
+    index: true
   },
   price_tiers: {
     type: [{

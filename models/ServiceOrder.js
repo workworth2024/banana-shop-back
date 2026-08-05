@@ -58,7 +58,8 @@ const serviceOrderSchema = new mongoose.Schema({
     enum: ['pending', 'in_progress', 'completed', 'cancelled'],
     default: 'pending'
   },
-  adminComment: { type: String, default: '' }
+  adminComment: { type: String, default: '' },
+  refundedAmount: { type: Number, default: 0 }
 }, { timestamps: true });
 
 serviceOrderSchema.index({ customerId: 1, createdAt: -1 });

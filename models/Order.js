@@ -82,6 +82,14 @@ const orderSchema = new mongoose.Schema({
     reason: { type: String, default: '' },
     createdAt: { type: Date, default: Date.now }
   }],
+  refundedQuantity: {
+    type: Number,
+    default: 0
+  },
+  refundedAmount: {
+    type: Number,
+    default: 0
+  },
   paidAt: {
     type: Date,
     default: null
@@ -89,6 +97,10 @@ const orderSchema = new mongoose.Schema({
   deliveredAt: {
     type: Date,
     default: null
+  },
+  analyzerCreditsGranted: {
+    type: Boolean,
+    default: false
   },
   ccInvoiceId: { type: String, default: '' },
   payLink: { type: String, default: '' }

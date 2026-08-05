@@ -1,5 +1,6 @@
 import fs from 'fs';
 import Order from '../models/Order.js';
+import Preorder from '../models/Preorder.js';
 import DigitalItem from '../models/DigitalItem.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Notification from '../models/Notification.js';
@@ -8,6 +9,7 @@ import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -42,15 +44,70 @@ export const getMyOrders = async (req, res) => {
 
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(lim)
       .select('-digitalItemId -accessKey')
-      .populate('digitalItemIds', 'uid originalName fileSize');
+      .populate('digitalItemIds', 'uid originalName fileSize')
+      .lean();
 
-    const total = await Order.countDocuments(query);
+    let preorders = [];
+    if (!status || status === 'completed') {
+      const preQuery = { customerId, status: 'completed' };
+      if (search) {
+        const safe = escapeRegex(String(search).slice(0, 100));
+        preQuery.uid = { $regex: safe, $options: 'i' };
+      }
+      if (query.createdAt) preQuery.createdAt = query.createdAt;
+
+      preorders = await Preorder.find(preQuery)
+        .populate('google_item_id', 'title')
+        .populate('youtube_item_id', 'title')
+        .select('-files.path')
+        .sort({ createdAt: -1 })
+        .lean();
+    }
+
+    const normalizedPreorders = preorders.map(p => {
+      const isYt = p.productType === 'youtube';
+      const product = isYt ? p.youtube_item_id : p.google_item_id;
+      const title = product?.title?.ru || product?.title?.en || '';
+      return {
+        _id: p._id,
+        uid: p.uid,
+        status: 'completed',
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        quantity: p.desired_quantity,
+        amount: p.amountPaid,
+        currency: p.currency,
+        productId: product?._id || null,
+        productType: isYt ? 'YoutubeProduct' : 'GoogleAdsProduct',
+        geo: p.geo,
+        geoBreakdown: p.geoBreakdown || [],
+        refundedQuantity: p.refundedQuantity,
+        refundedAmount: p.refundedAmount,
+        productSnapshot: {
+          title,
+          productType: isYt ? 'YoutubeProduct' : 'GoogleAdsProduct',
+          geo: p.geo
+        },
+        digitalItemIds: (p.files || []).map(f => ({
+          _id: f._id,
+          uid: String(f._id),
+          originalName: f.originalName,
+          fileSize: f.size
+        })),
+        replacements: [],
+        _isPreorder: true
+      };
+    });
+
+    const merged = [...orders, ...normalizedPreorders]
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const total = merged.length;
+    const paged = merged.slice(skip, skip + lim);
 
     return res.status(200).json({
-      orders,
+      orders: paged,
       total,
       pages: Math.ceil(total / lim),
       currentPage: pg
@@ -228,6 +285,16 @@ export const updateOrderStatus = async (req, res) => {
         orderUid: order.uid,
         productType: order.productType || order.productSnapshot?.productType
       }).catch(() => {});
+
+      // Заказ может вернуться в delivered после замены — начисляем бонусные проверки строго один раз
+      const claimed = await Order.updateOne(
+        { _id: order._id, analyzerCreditsGranted: { $ne: true } },
+        { $set: { analyzerCreditsGranted: true } }
+      ).catch(() => null);
+
+      if (claimed?.modifiedCount > 0) {
+        grantAnalyzerCredits({ customerId: order.customerId, qty: order.quantity || 1 }).catch(() => {});
+      }
     }
 
     try {

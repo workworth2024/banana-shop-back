@@ -49,10 +49,15 @@ const manualSchema = new mongoose.Schema({
     ref: 'Filter',
     required: false
   },
+  /** Legacy: одиночный тег (зеркалит первый элемент tag_ids для старых клиентов) */
   tag_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'ManualTag',
     required: false
+  },
+  tag_ids: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ManualTag' }],
+    default: []
   }
 }, { timestamps: true });
 

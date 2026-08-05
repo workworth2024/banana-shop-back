@@ -28,6 +28,10 @@ const preorderSchema = new mongoose.Schema({
     default: 'google'
   },
   geo: { type: String, default: '', uppercase: true, trim: true },
+  geoBreakdown: [{
+    geo: { type: String, uppercase: true, trim: true },
+    quantity: { type: Number, min: 1 }
+  }],
   name: { type: String, required: true, trim: true },
   telegram: { type: String, required: true, trim: true },
   desired_quantity: { type: Number, required: true, min: 1 },
@@ -53,7 +57,15 @@ const preorderSchema = new mongoose.Schema({
     path: String,
     originalName: String,
     size: Number
-  }]
+  }],
+  refundedQuantity: {
+    type: Number,
+    default: 0
+  },
+  refundedAmount: {
+    type: Number,
+    default: 0
+  }
 }, { timestamps: true });
 
 preorderSchema.index({ customerId: 1, createdAt: -1 });

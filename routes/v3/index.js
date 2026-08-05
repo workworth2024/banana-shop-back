@@ -24,6 +24,10 @@ import dashboardRoutes from './dashboardRoutes.js';
 import cryptoCloudRoutes from './cryptoCloudRoutes.js';
 import referralRoutes from './referralRoutes.js';
 import trackingRoutes from './trackingRoutes.js';
+import whitePageRoutes from './whitePageRoutes.js';
+import orderHistoryRoutes from './orderHistoryRoutes.js';
+import analyzerRoutes from './analyzerRoutes.js';
+import teamRoutes from './teamRoutes.js';
 
 const router = express.Router();
 
@@ -52,5 +56,9 @@ router.use('/admin/dashboard', dashboardRoutes);
 router.use('/cryptocloud', cryptoCloudRoutes);
 router.use('/referral', referralRoutes);
 router.use('/tracking', trackingRoutes);
+router.use('/white-pages', whitePageRoutes);
+router.use('/order-history', orderHistoryRoutes);
+router.use('/analyzer', analyzerRoutes);
+router.use('/team', teamRoutes);
 
 export default router;

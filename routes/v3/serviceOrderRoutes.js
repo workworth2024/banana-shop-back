@@ -2,7 +2,8 @@ import express from 'express';
 import {
   createServiceOrder, getMyServiceOrders, downloadResultFile,
   getAllServiceOrders, updateServiceOrderStatus,
-  uploadResultFiles, deleteResultFile, downloadCustomerFile
+  uploadResultFiles, deleteResultFile, downloadCustomerFile,
+  processServiceOrderRefund
 } from '../../controllers/serviceOrderController.js';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
@@ -22,6 +23,7 @@ router.get('/my/:uid/download/:fileId', verifyCustomer, downloadResultFile);
 
 router.get('/', verifyToken, canManage, getAllServiceOrders);
 router.put('/:id/status', verifyToken, canManage, updateServiceOrderStatus);
+router.post('/:id/refund', verifyToken, canManage, processServiceOrderRefund);
 router.post('/:id/result-files', verifyToken, canManage, uploadServiceOrder.array('files', 50), uploadResultFiles);
 router.delete('/:id/result-files/:fileId', verifyToken, canManage, deleteResultFile);
 router.get('/:id/customer-files/:fileId/download', verifyToken, canManage, downloadCustomerFile);

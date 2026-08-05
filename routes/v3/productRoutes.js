@@ -4,7 +4,8 @@ import {
 } from '../../controllers/filterController.js';
 import { 
   getYoutubeProducts, createYoutubeProduct, updateYoutubeProduct, deleteYoutubeProduct,
-  getGoogleAdsProducts, createGoogleAdsProduct, updateGoogleAdsProduct, deleteGoogleAdsProduct 
+  getGoogleAdsProducts, createGoogleAdsProduct, updateGoogleAdsProduct, deleteGoogleAdsProduct,
+  getYoutubePositions, reorderYoutubeProducts, getGoogleAdsPositions, reorderGoogleAdsProducts
 } from '../../controllers/productController.js';
 import { verifyToken, hasAccess } from '../../middlewares/authMiddleware.js';
 import upload from '../../middlewares/uploadMiddleware.js';
@@ -29,14 +30,18 @@ router.delete('/filters/:id', verifyToken, canManageProducts, deleteFilter);
 
 // Youtube Products
 router.get('/youtube', verifyToken, getYoutubeProducts);
+router.get('/youtube/positions', verifyToken, getYoutubePositions);
+router.patch('/youtube/positions', verifyToken, canManageProducts, reorderYoutubeProducts);
 router.post('/youtube', verifyToken, canManageProducts, upload.single('image'), createYoutubeProduct);
 router.put('/youtube/:id', verifyToken, canManageProducts, upload.single('image'), updateYoutubeProduct);
 router.delete('/youtube/:id', verifyToken, canManageProducts, deleteYoutubeProduct);
 
 // Google Ads Products
 router.get('/google-ads', verifyToken, getGoogleAdsProducts);
-router.post('/google-ads', verifyToken, canManageProducts, upload.single('image'), createGoogleAdsProduct);
-router.put('/google-ads/:id', verifyToken, canManageProducts, upload.single('image'), updateGoogleAdsProduct);
+router.get('/google-ads/positions', verifyToken, getGoogleAdsPositions);
+router.patch('/google-ads/positions', verifyToken, canManageProducts, reorderGoogleAdsProducts);
+router.post('/google-ads', verifyToken, canManageProducts, upload.array('images', 8), createGoogleAdsProduct);
+router.put('/google-ads/:id', verifyToken, canManageProducts, upload.array('images', 8), updateGoogleAdsProduct);
 router.delete('/google-ads/:id', verifyToken, canManageProducts, deleteGoogleAdsProduct);
 
 export default router;

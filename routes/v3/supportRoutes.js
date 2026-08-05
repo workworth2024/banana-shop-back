@@ -19,7 +19,8 @@ import {
   staffClose,
   staffReopen,
   staffMarkRead,
-  staffStats
+  staffStats,
+  staffStartTicket
 } from '../../controllers/supportController.js';
 
 const router = express.Router();
@@ -51,6 +52,7 @@ router.post('/my/tickets/:id/messages', verifyCustomer, sendLimiter, uploadSuppo
 router.post('/my/tickets/:id/read', verifyCustomer, customerMarkRead);
 
 /* ----- Staff ----- */
+router.post('/tickets/start', verifyToken, allowAnyStaff, sendLimiter, uploadSupport.array('attachments', 5), staffStartTicket);
 router.get('/tickets', verifyToken, allowAnyStaff, staffListTickets);
 router.get('/stats', verifyToken, allowAnyStaff, staffStats);
 router.get('/tickets/:id', verifyToken, allowAnyStaff, staffGetTicket);

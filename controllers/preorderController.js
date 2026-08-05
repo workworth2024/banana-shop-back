@@ -9,8 +9,9 @@ import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
-import { creditReferralReward } from '../utils/referral.js';
+import { creditReferralReward, clawbackReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
+import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { isValidGeo } from '../utils/geos.js';
 
 const NOTIF_TITLES = {
@@ -36,7 +37,7 @@ async function sendPreorderNotif(preorder) {
     type: 'preorder_status',
     title: titles,
     message: NOTIF_MSGS[status](uid),
-    link: `/profile/preorders?search=${uid}`
+    link: status === 'completed' ? `/profile/orders?search=${uid}` : `/profile/preorders?search=${uid}`
   });
 
   io.of('/customer').to(`customer:${customerId}`).emit('notification', {
@@ -52,7 +53,7 @@ export const createPreorder = async (req, res) => {
     }
 
     const customerId = req.customer._id;
-    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo, useBonusBalance = false } = req.body;
+    const { google_item_id, youtube_item_id, name, telegram, desired_quantity, comment, geo, geoBreakdown, useBonusBalance = false } = req.body;
 
     let product = null;
     let productType = 'google';
@@ -68,21 +69,47 @@ export const createPreorder = async (req, res) => {
     }
 
     if (!product) return res.status(404).json({ message: 'Товар не найден' });
-    if (!name || !telegram || desired_quantity === undefined || desired_quantity === null) {
-      return res.status(400).json({ message: 'Обязательные поля: name, telegram, desired_quantity' });
+    if (!name || !telegram) {
+      return res.status(400).json({ message: 'Обязательные поля: name, telegram' });
     }
 
-    const geoCode = String(geo || '').trim().toUpperCase();
-    if (!geoCode || !isValidGeo(geoCode)) {
+    const productGeoCodes = (product.geos || []).map(g => g.code);
+
+    let breakdown = [];
+    if (Array.isArray(geoBreakdown) && geoBreakdown.length) {
+      breakdown = geoBreakdown
+        .map(g => ({
+          geo: String(g?.geo || '').trim().toUpperCase(),
+          quantity: Math.max(1, Math.min(500, parseInt(g?.quantity, 10) || 0))
+        }))
+        .filter(g => g.geo && g.quantity > 0);
+    } else if (geo) {
+      const geoCode = String(geo || '').trim().toUpperCase();
+      const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10) || 1));
+      if (geoCode) breakdown = [{ geo: geoCode, quantity: qty }];
+    }
+
+    if (!breakdown.length) {
       return res.status(400).json({ message: 'Выберите гео для предзаказа' });
     }
-    const productGeoCodes = (product.geos || []).map(g => g.code);
-    if (productGeoCodes.length && !productGeoCodes.includes(geoCode)) {
-      return res.status(400).json({ message: `Гео ${geoCode} недоступно для этого товара` });
+    for (const g of breakdown) {
+      if (!isValidGeo(g.geo)) {
+        return res.status(400).json({ message: `Некорректное гео ${g.geo}` });
+      }
+      if (productGeoCodes.length && !productGeoCodes.includes(g.geo)) {
+        return res.status(400).json({ message: `Гео ${g.geo} недоступно для этого товара` });
+      }
+    }
+    const seenGeos = new Set();
+    for (const g of breakdown) {
+      if (seenGeos.has(g.geo)) {
+        return res.status(400).json({ message: `Гео ${g.geo} указано дважды` });
+      }
+      seenGeos.add(g.geo);
     }
 
-    const qty = Math.max(1, Math.min(500, parseInt(desired_quantity, 10)));
-    if (Number.isNaN(qty)) {
+    const qty = breakdown.reduce((s, g) => s + g.quantity, 0);
+    if (qty <= 0 || qty > 500) {
       return res.status(400).json({ message: 'Некорректное количество' });
     }
 
@@ -128,7 +155,8 @@ export const createPreorder = async (req, res) => {
         youtube_item_id: productType === 'youtube' ? product._id : null,
         productType,
         customerId,
-        geo: geoCode,
+        geo: breakdown.map(g => g.geo).join(', '),
+        geoBreakdown: breakdown,
         name: String(name).trim().slice(0, 200),
         telegram: String(telegram).trim().slice(0, 100),
         desired_quantity: qty,
@@ -167,6 +195,8 @@ export const createPreorder = async (req, res) => {
         orderUid: preorder.uid,
         productType: productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
       }).catch(() => {});
+
+      grantAnalyzerCredits({ customerId, qty }).catch(() => {});
 
       io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
         balance: customer.balance,
@@ -309,14 +339,14 @@ export const getMyPreorders = async (req, res) => {
   try {
     const customerId = req.customer._id;
     const { page = 1, limit = 10, search = '', status = '', startDate, endDate } = req.query;
-    const query = { customerId };
+    const query = { customerId, status: { $ne: 'completed' } };
 
     if (search) {
       const safe = String(search).slice(0, 200);
       query.$or = [{ uid: { $regex: safe, $options: 'i' } }];
     }
 
-    if (status && ['pending', 'in_progress', 'completed', 'cancelled'].includes(status)) {
+    if (status && ['pending', 'in_progress', 'cancelled'].includes(status)) {
       query.status = status;
     }
 
@@ -379,6 +409,77 @@ export const downloadMyPreorderFile = async (req, res) => {
   } catch (error) {
     console.error('[Preorder] downloadMyPreorderFile error:', error);
     if (!res.headersSent) res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const processPreorderRefund = async (req, res) => {
+  try {
+    const { quantity } = req.body;
+    const preorder = await Preorder.findById(req.params.id);
+    if (!preorder) return res.status(404).json({ message: 'Предзаказ не найден' });
+
+    const totalQty = preorder.desired_quantity || 1;
+    const alreadyRefundedQty = preorder.refundedQuantity || 0;
+    const remainingQty = totalQty - alreadyRefundedQty;
+
+    if (preorder.status === 'cancelled' || remainingQty <= 0) {
+      return res.status(400).json({ message: 'Предзаказ уже полностью возвращён' });
+    }
+
+    let qty = parseInt(quantity, 10);
+    if (!Number.isFinite(qty) || qty <= 0) qty = remainingQty;
+    qty = Math.min(qty, remainingQty);
+
+    const unitPrice = preorder.unitPriceSnapshot || (preorder.amountPaid / totalQty);
+    const refundAmount = parseFloat((unitPrice * qty).toFixed(2));
+
+    const customer = await CustomerUser.findByIdAndUpdate(
+      preorder.customerId,
+      { $inc: { balance: refundAmount } },
+      { returnDocument: 'after' }
+    );
+    if (!customer) return res.status(404).json({ message: 'Покупатель не найден' });
+
+    await Transaction.create({
+      userId: preorder.customerId,
+      type: 'refund',
+      status: 'success',
+      amount: refundAmount,
+      currency: preorder.currency || 'USD',
+      note: `Возврат по предзаказу ${preorder.uid} (${qty}/${totalQty} шт.)`
+    });
+
+    preorder.refundedQuantity = alreadyRefundedQty + qty;
+    preorder.refundedAmount = parseFloat(((preorder.refundedAmount || 0) + refundAmount).toFixed(2));
+    const fullyRefunded = preorder.refundedQuantity >= totalQty;
+    if (fullyRefunded) preorder.status = 'cancelled';
+    await preorder.save();
+
+    if (fullyRefunded) {
+      clawbackReferralReward({ orderId: preorder._id, orderType: 'preorder' }).catch(() => {});
+    }
+
+    const notif = await Notification.create({
+      userId: preorder.customerId,
+      type: 'preorder_refunded',
+      title: { ru: 'Возврат средств', en: 'Refund issued' },
+      message: {
+        ru: `По предзаказу ${preorder.uid} возвращено $${refundAmount.toFixed(2)}`,
+        en: `Preorder ${preorder.uid} refunded $${refundAmount.toFixed(2)}`
+      },
+      link: preorder.status === 'completed' ? `/profile/orders?search=${preorder.uid}` : `/profile/preorders?search=${preorder.uid}`
+    });
+
+    io.of('/customer').to(`customer:${preorder.customerId}`).emit('balance_updated', { balance: customer.balance });
+    io.of('/customer').to(`customer:${preorder.customerId}`).emit('notification', {
+      id: notif._id, type: notif.type, title: notif.title,
+      message: notif.message, link: notif.link, createdAt: notif.createdAt
+    });
+
+    return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, preorder });
+  } catch (error) {
+    console.error('[Preorder] processPreorderRefund error:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 };
 

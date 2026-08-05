@@ -75,6 +75,11 @@ const customerUserSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  telegramPhotoUrl: {
+    type: String,
+    default: null,
+    trim: true
+  },
   balance: {
     type: Number,
     default: 0,
@@ -126,6 +131,11 @@ const customerUserSchema = new mongoose.Schema({
     type: String,
     enum: ['ru', 'en'],
     default: 'en'
+  },
+  analyzer: {
+    dailyUsed: { type: Number, default: 0, min: 0 },
+    dailyDate: { type: String, default: null }, // YYYY-MM-DD, resets dailyUsed when it changes
+    bonusCredits: { type: Number, default: 0, min: 0 } // permanent, earned per purchased unit
   }
 }, { timestamps: true });
 
