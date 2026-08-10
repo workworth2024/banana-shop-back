@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { register, verifyRegistration, resendRegistrationCode, getCaptchaToken, requestEmailCode, confirmEmailCode, forgotPassword, resetPassword, login, logout, getMe, updateProfile, setup2FA, enable2FA, disable2FA, verifyLogin2FA, telegramCallback, linkTelegram, unlinkTelegram } from '../../controllers/customerAuthController.js';
+import { register, verifyRegistration, resendRegistrationCode, getCaptchaToken, requestEmailCode, confirmEmailCode, forgotPassword, resetPassword, login, logout, getMe, updateProfile, setup2FA, enable2FA, disable2FA, verifyLogin2FA, telegramCallback, telegramWebAppLogin, telegramMagicLogin, linkTelegram, unlinkTelegram } from '../../controllers/customerAuthController.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
 
 const router = express.Router();
@@ -62,6 +62,8 @@ router.post('/2fa/setup', verifyCustomer, setup2FA);
 router.post('/2fa/enable', verifyCustomer, enable2FA);
 router.post('/2fa/disable', verifyCustomer, disable2FA);
 router.post('/telegram/callback', telegramCallback);
+router.post('/telegram/webapp', loginLimiter, telegramWebAppLogin);
+router.post('/telegram/magic', loginLimiter, telegramMagicLogin);
 router.post('/telegram/link', verifyCustomer, linkTelegram);
 router.delete('/telegram/link', verifyCustomer, unlinkTelegram);
 

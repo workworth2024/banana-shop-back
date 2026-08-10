@@ -28,6 +28,7 @@ import whitePageRoutes from './whitePageRoutes.js';
 import orderHistoryRoutes from './orderHistoryRoutes.js';
 import analyzerRoutes from './analyzerRoutes.js';
 import teamRoutes from './teamRoutes.js';
+import telegramBotRoutes from './telegramBotRoutes.js';
 
 const router = express.Router();
 
@@ -60,5 +61,6 @@ router.use('/white-pages', whitePageRoutes);
 router.use('/order-history', orderHistoryRoutes);
 router.use('/analyzer', analyzerRoutes);
 router.use('/team', teamRoutes);
+router.use('/telegram-bot', telegramBotRoutes);
 
 export default router;

@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import PendingRegistration from '../models/PendingRegistration.js';
+import TelegramLoginToken from '../models/TelegramLoginToken.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { attachAcquisition } from '../utils/tracking.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/mailer.js';
@@ -55,6 +56,7 @@ const safeUser = (user) => {
     emailVerified: !internal && user.verifemail !== false,
     telegramUsername: user.telegramUsername,
     telegramLinked: !!user.telegramId,
+    telegramPhotoUrl: user.telegramPhotoUrl || '',
     avatarUrl: telegramAvatarPath(user.telegramPhotoUrl),
     balance: user.balance,
     bonusBalance: user.bonusBalance || 0,
@@ -759,6 +761,74 @@ export const updateProfile = async (req, res) => {
   }
 };
 
+/**
+ * Finds the CustomerUser for a given Telegram id, creating one on first
+ * contact (same rules for the Login Widget callback and the Mini App auto-login).
+ * `tgUser` uses Telegram's own field names: id, username, first_name, photo_url.
+ */
+const findOrCreateTelegramCustomer = async ({ tgUser, referralCode }) => {
+  const telegramId = String(tgUser.id);
+
+  let user = await CustomerUser.findOne({ telegramId });
+  let isNewUser = false;
+
+  if (!user) {
+    isNewUser = true;
+    let baseUsername = (tgUser.username || tgUser.first_name || 'user')
+      .replace(/[^a-zA-Z0-9_]/g, '')
+      .slice(0, 25);
+    if (baseUsername.length < 3) baseUsername = 'tg_' + baseUsername;
+
+    let username = baseUsername;
+    let attempt = 0;
+    while (await CustomerUser.findOne({ username })) {
+      attempt++;
+      username = `${baseUsername}${attempt}`;
+    }
+
+    const fakeEmail = `tg${telegramId}@banana.internal`;
+    const randomPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
+
+    let referredByUser = null;
+    if (referralCode) {
+      referredByUser = await CustomerUser.findOne({ referralCode: String(referralCode).toUpperCase() });
+    }
+
+    user = await CustomerUser.create({
+      username,
+      email: fakeEmail,
+      password: randomPassword,
+      telegramId,
+      telegramUsername: tgUser.username || null,
+      telegramPhotoUrl: tgUser.photo_url || null,
+      referredBy: referredByUser?._id || null,
+      verifemail: true
+    });
+  } else if ((tgUser.photo_url || '') !== (user.telegramPhotoUrl || '')) {
+    // Аватарка в TG могла поменяться — обновляем на каждом входе
+    user.telegramPhotoUrl = tgUser.photo_url || null;
+    if (tgUser.username) user.telegramUsername = tgUser.username;
+    await user.save();
+  }
+
+  return { user, isNewUser };
+};
+
+const issueCustomerSession = async (res, user, req) => {
+  const token = generateToken(user._id);
+  const expire = new Date(Date.now() + COOKIE_MAX_AGE);
+
+  await CustomerSession.create({
+    userId: user._id,
+    token,
+    expire,
+    ip: req.ip,
+    device: req.headers['user-agent']
+  });
+
+  setAuthCookie(res, token);
+};
+
 export const telegramCallback = async (req, res) => {
   try {
     const tgData = req.body;
@@ -771,69 +841,16 @@ export const telegramCallback = async (req, res) => {
       return res.status(401).json({ message: 'Telegram auth verification failed' });
     }
 
-    const telegramId = String(tgData.id);
-
-    let user = await CustomerUser.findOne({ telegramId });
-    let isNewUser = false;
-
-    if (!user) {
-      isNewUser = true;
-      let baseUsername = (tgData.username || tgData.first_name || 'user')
-        .replace(/[^a-zA-Z0-9_]/g, '')
-        .slice(0, 25);
-      if (baseUsername.length < 3) baseUsername = 'tg_' + baseUsername;
-
-      let username = baseUsername;
-      let attempt = 0;
-      while (await CustomerUser.findOne({ username })) {
-        attempt++;
-        username = `${baseUsername}${attempt}`;
-      }
-
-      const fakeEmail = `tg${telegramId}@banana.internal`;
-      const randomPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
-
-      let referredByUser = null;
-      const incomingRef = tgData.referralCode || req.body.referralCode;
-      if (incomingRef) {
-        referredByUser = await CustomerUser.findOne({ referralCode: String(incomingRef).toUpperCase() });
-      }
-
-      user = await CustomerUser.create({
-        username,
-        email: fakeEmail,
-        password: randomPassword,
-        telegramId,
-        telegramUsername: tgData.username || null,
-        telegramPhotoUrl: tgData.photo_url || null,
-        referredBy: referredByUser?._id || null,
-        verifemail: true
-      });
-    }
+    const { user, isNewUser } = await findOrCreateTelegramCustomer({
+      tgUser: tgData,
+      referralCode: tgData.referralCode || req.body.referralCode
+    });
 
     if (!user.status) {
       return res.status(403).json({ message: 'Account is disabled' });
     }
 
-    // Аватарка в TG могла поменяться — обновляем на каждом входе
-    if (!isNewUser && (tgData.photo_url || '') !== (user.telegramPhotoUrl || '')) {
-      user.telegramPhotoUrl = tgData.photo_url || null;
-      if (tgData.username) user.telegramUsername = tgData.username;
-      await user.save();
-    }
-
-    const token = generateToken(user._id);
-    const expire = new Date(Date.now() + COOKIE_MAX_AGE);
-
-    await CustomerSession.create({
-      userId: user._id,
-      token,
-      expire,
-      ip: req.ip,
-      device: req.headers['user-agent']
-    });
-
-    setAuthCookie(res, token);
+    await issueCustomerSession(res, user, req);
 
     if (isNewUser) {
       attachAcquisition({ user, code: req.body?.trackingCode, req }).catch(() => {});
@@ -845,6 +862,166 @@ export const telegramCallback = async (req, res) => {
     });
   } catch (error) {
     console.error('[CustomerAuth] telegramCallback error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Verifies the `initData` string a Telegram Mini App sends on launch.
+ * Uses the Mini App HMAC scheme (different from the Login Widget one above):
+ * secret_key = HMAC_SHA256(bot_token, key="WebAppData"), then
+ * hash = HMAC_SHA256(data_check_string, key=secret_key).
+ * Docs: https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+ */
+const verifyTelegramWebAppData = (initData) => {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !initData) return null;
+
+  const params = new URLSearchParams(initData);
+  const hash = params.get('hash');
+  if (!hash) return null;
+  params.delete('hash');
+
+  const dataCheckArr = [];
+  for (const key of Array.from(params.keys()).sort()) {
+    dataCheckArr.push(`${key}=${params.get(key)}`);
+  }
+  const dataCheckString = dataCheckArr.join('\n');
+
+  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (computedHash !== hash) return null;
+
+  const authDate = Number(params.get('auth_date'));
+  if (!authDate || Math.floor(Date.now() / 1000) - authDate > 86400) return null;
+
+  let user;
+  try {
+    user = JSON.parse(params.get('user') || 'null');
+  } catch {
+    user = null;
+  }
+  if (!user || !user.id) return null;
+
+  return { user, startParam: params.get('start_param') || '' };
+};
+
+/**
+ * Auto-login for the Telegram Mini App: the frontend sends `window.Telegram.WebApp.initData`
+ * on launch, we verify it server-side and log the user in exactly like the Login Widget flow.
+ */
+export const telegramWebAppLogin = async (req, res) => {
+  try {
+    const { initData } = req.body || {};
+    const verified = verifyTelegramWebAppData(initData);
+    if (!verified) {
+      return res.status(401).json({ message: 'Telegram WebApp verification failed' });
+    }
+
+    const { user, isNewUser } = await findOrCreateTelegramCustomer({
+      tgUser: verified.user,
+      referralCode: verified.startParam
+    });
+
+    if (!user.status) {
+      return res.status(403).json({ message: 'Account is disabled' });
+    }
+
+    await issueCustomerSession(res, user, req);
+
+    if (isNewUser) {
+      attachAcquisition({ user, code: req.body?.trackingCode, req }).catch(() => {});
+    }
+
+    return res.status(200).json({
+      message: 'Logged in via Telegram Mini App',
+      user: safeUser(user)
+    });
+  } catch (error) {
+    console.error('[CustomerAuth] telegramWebAppLogin error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Called by the bot service (internal, shared-secret auth — see
+ * middlewares/botInternalMiddleware.js) whenever a user presses "Авторизация"
+ * or sends any message: mints a fresh one-time login link for the website.
+ */
+export const createTelegramMagicLink = async (req, res) => {
+  try {
+    const tgUser = req.body?.user;
+    if (!tgUser || !tgUser.id) {
+      return res.status(400).json({ message: 'user is required' });
+    }
+
+    const { user } = await findOrCreateTelegramCustomer({
+      tgUser,
+      referralCode: req.body?.referralCode
+    });
+
+    if (!user.status) {
+      return res.status(403).json({ message: 'Account is disabled' });
+    }
+
+    // Invalidate any older unused links for this user so only the latest one works.
+    await TelegramLoginToken.updateMany(
+      { customerId: user._id, used: false },
+      { $set: { used: true } }
+    );
+
+    const loginToken = await TelegramLoginToken.create({
+      customerId: user._id,
+      telegramId: String(tgUser.id),
+      expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS)
+    });
+
+    const siteUrl = (process.env.SITE_URL || 'https://banana-traff-shop.com').replace(/\/$/, '');
+    return res.status(200).json({
+      url: `${siteUrl}/tg-login?token=${loginToken.token}`,
+      expiresInSec: MAGIC_LINK_TTL_MS / 1000
+    });
+  } catch (error) {
+    console.error('[CustomerAuth] createTelegramMagicLink error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/**
+ * Consumes a one-time magic link token (opened from the bot) and logs the
+ * matching customer in on the website — no Telegram Login Widget needed.
+ */
+export const telegramMagicLogin = async (req, res) => {
+  try {
+    const { token } = req.body || {};
+    if (!token) {
+      return res.status(400).json({ message: 'token is required' });
+    }
+
+    const loginToken = await TelegramLoginToken.findOneAndUpdate(
+      { token, used: false, expiresAt: { $gt: new Date() } },
+      { $set: { used: true } }
+    );
+    if (!loginToken) {
+      return res.status(401).json({ message: 'Ссылка недействительна или уже использована' });
+    }
+
+    const user = await CustomerUser.findById(loginToken.customerId);
+    if (!user || !user.status) {
+      return res.status(403).json({ message: 'Account not found or disabled' });
+    }
+
+    await issueCustomerSession(res, user, req);
+
+    return res.status(200).json({
+      message: 'Logged in via Telegram magic link',
+      user: safeUser(user)
+    });
+  } catch (error) {
+    console.error('[CustomerAuth] telegramMagicLogin error:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 };
