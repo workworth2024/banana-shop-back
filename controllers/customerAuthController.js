@@ -766,7 +766,7 @@ export const updateProfile = async (req, res) => {
  * contact (same rules for the Login Widget callback and the Mini App auto-login).
  * `tgUser` uses Telegram's own field names: id, username, first_name, photo_url.
  */
-const findOrCreateTelegramCustomer = async ({ tgUser, referralCode }) => {
+export const findOrCreateTelegramCustomer = async ({ tgUser, referralCode }) => {
   const telegramId = String(tgUser.id);
 
   let user = await CustomerUser.findOne({ telegramId });
