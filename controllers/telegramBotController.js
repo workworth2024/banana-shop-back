@@ -93,3 +93,28 @@ export const getBotWallet = async (req, res) => {
     return res.status(500).json({ message: 'Server error' });
   }
 };
+
+/** Paginated transaction history — powers the "История транзакций" 1/2/3… page buttons in the bot. */
+export const getBotWalletHistory = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(10, Math.max(1, parseInt(req.query.limit, 10) || 10));
+    const skip = (page - 1) * limit;
+
+    const query = { userId: req.customer._id };
+    const [transactions, total] = await Promise.all([
+      Transaction.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Transaction.countDocuments(query)
+    ]);
+
+    return res.status(200).json({
+      transactions,
+      total,
+      pages: Math.ceil(total / limit) || 1,
+      currentPage: page
+    });
+  } catch (error) {
+    console.error('[TelegramBot] getBotWalletHistory error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};

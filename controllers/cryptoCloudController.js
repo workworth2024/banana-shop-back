@@ -21,6 +21,7 @@ import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
+import { notifyTelegram } from '../utils/telegramNotify.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -672,6 +673,16 @@ async function fulfillTopup(invoice, creditAmount) {
       link: `/transactions?search=${encodeURIComponent(tx.uid)}`,
       meta: { customerId: customer._id, amount: creditAmount, orderId: invoice.orderId, uuid: invoice.uuid }
     });
+
+    if (customer.telegramId) {
+      const isRu = (customer.language || 'ru') !== 'en';
+      notifyTelegram(
+        customer.telegramId,
+        isRu
+          ? `💰 <b>Баланс пополнен!</b>\n\n+$${creditAmount.toFixed(2)} через CryptoCloud.\nНовый баланс: <b>$${customer.balance.toFixed(2)}</b>`
+          : `💰 <b>Balance topped up!</b>\n\n+$${creditAmount.toFixed(2)} via CryptoCloud.\nNew balance: <b>$${customer.balance.toFixed(2)}</b>`
+      ).catch(() => {});
+    }
   }
 }
 
