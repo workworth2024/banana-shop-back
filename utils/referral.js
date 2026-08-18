@@ -3,8 +3,8 @@ import Transaction from '../models/Transaction.js';
 import ReferralTransaction from '../models/ReferralTransaction.js';
 import ReferralSettings from '../models/ReferralSettings.js';
 import CustomerReferralRate from '../models/CustomerReferralRate.js';
-import Notification from '../models/Notification.js';
 import { io } from '../server.js';
+import { notifyCustomer } from './notify.js';
 
 async function getSettings() {
   let settings = await ReferralSettings.findOne();
@@ -75,8 +75,10 @@ export async function creditReferralReward({ customerId, orderAmount, orderType,
     });
 
     try {
-      const notif = await Notification.create({
-        userId: referrer._id,
+      io.of('/customer').to(`customer:${referrer._id}`).emit('balance_updated', { balance: referrer.balance, bonusBalance: referrer.bonusBalance });
+      await notifyCustomer({
+        customerId: referrer._id,
+        customer: referrer,
         type: 'referral_reward',
         title: { ru: 'Реферальное начисление', en: 'Referral reward' },
         message: {
@@ -84,10 +86,6 @@ export async function creditReferralReward({ customerId, orderAmount, orderType,
           en: `You earned $${rewardAmount.toFixed(2)} from referral purchase`
         },
         link: '/profile/referral'
-      });
-      io.of('/customer').to(`customer:${referrer._id}`).emit('balance_updated', { balance: referrer.balance, bonusBalance: referrer.bonusBalance });
-      io.of('/customer').to(`customer:${referrer._id}`).emit('notification', {
-        id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
       });
     } catch {}
 

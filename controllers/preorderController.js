@@ -3,7 +3,6 @@ import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
-import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
@@ -13,6 +12,7 @@ import { creditReferralReward, clawbackReferralReward } from '../utils/referral.
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { isValidGeo } from '../utils/geos.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 const NOTIF_TITLES = {
   in_progress: { ru: 'Предзаказ взят в работу', en: 'Preorder in progress' },
@@ -32,17 +32,12 @@ async function sendPreorderNotif(preorder) {
   const titles = NOTIF_TITLES[status];
   if (!titles) return;
 
-  const notif = await Notification.create({
-    userId: customerId,
+  await notifyCustomer({
+    customerId,
     type: 'preorder_status',
     title: titles,
     message: NOTIF_MSGS[status](uid),
     link: status === 'completed' ? `/profile/orders?search=${uid}` : `/profile/preorders?search=${uid}`
-  });
-
-  io.of('/customer').to(`customer:${customerId}`).emit('notification', {
-    id: notif._id, type: notif.type, title: notif.title,
-    message: notif.message, link: notif.link, createdAt: notif.createdAt
   });
 }
 
@@ -459,8 +454,9 @@ export const processPreorderRefund = async (req, res) => {
       clawbackReferralReward({ orderId: preorder._id, orderType: 'preorder' }).catch(() => {});
     }
 
-    const notif = await Notification.create({
-      userId: preorder.customerId,
+    io.of('/customer').to(`customer:${preorder.customerId}`).emit('balance_updated', { balance: customer.balance });
+    await notifyCustomer({
+      customerId: preorder.customerId,
       type: 'preorder_refunded',
       title: { ru: 'Возврат средств', en: 'Refund issued' },
       message: {
@@ -468,12 +464,6 @@ export const processPreorderRefund = async (req, res) => {
         en: `Preorder ${preorder.uid} refunded $${refundAmount.toFixed(2)}`
       },
       link: preorder.status === 'completed' ? `/profile/orders?search=${preorder.uid}` : `/profile/preorders?search=${preorder.uid}`
-    });
-
-    io.of('/customer').to(`customer:${preorder.customerId}`).emit('balance_updated', { balance: customer.balance });
-    io.of('/customer').to(`customer:${preorder.customerId}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title,
-      message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, preorder });

@@ -3,7 +3,6 @@ import mongoose from 'mongoose';
 import CryptoCloudInvoice from '../models/CryptoCloudInvoice.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
-import Notification from '../models/Notification.js';
 import DigitalItem from '../models/DigitalItem.js';
 import Order from '../models/Order.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
@@ -21,7 +20,7 @@ import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
-import { notifyTelegram } from '../utils/telegramNotify.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocloud.plus';
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
@@ -650,19 +649,16 @@ async function fulfillTopup(invoice, creditAmount) {
   if (customer) {
     io.of('/customer').to(`customer:${customer._id}`).emit('balance_updated', { balance: customer.balance });
 
-    const notif = await Notification.create({
-      userId: customer._id,
+    await notifyCustomer({
+      customerId: customer._id,
+      customer,
       type: 'balance_updated',
       title: { ru: 'Баланс пополнен', en: 'Balance topped up' },
       message: {
-        ru: `Пополнение через CryptoCloud: +$${creditAmount.toFixed(2)}`,
-        en: `CryptoCloud top-up: +$${creditAmount.toFixed(2)}`
+        ru: `Пополнение через CryptoCloud: +$${creditAmount.toFixed(2)}. Новый баланс: $${customer.balance.toFixed(2)}`,
+        en: `CryptoCloud top-up: +$${creditAmount.toFixed(2)}. New balance: $${customer.balance.toFixed(2)}`
       },
       link: '/profile/wallet'
-    });
-
-    io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     createAdminNotif({
@@ -673,16 +669,6 @@ async function fulfillTopup(invoice, creditAmount) {
       link: `/transactions?search=${encodeURIComponent(tx.uid)}`,
       meta: { customerId: customer._id, amount: creditAmount, orderId: invoice.orderId, uuid: invoice.uuid }
     });
-
-    if (customer.telegramId) {
-      const isRu = (customer.language || 'ru') !== 'en';
-      notifyTelegram(
-        customer.telegramId,
-        isRu
-          ? `💰 <b>Баланс пополнен!</b>\n\n+$${creditAmount.toFixed(2)} через CryptoCloud.\nНовый баланс: <b>$${customer.balance.toFixed(2)}</b>`
-          : `💰 <b>Balance topped up!</b>\n\n+$${creditAmount.toFixed(2)} via CryptoCloud.\nNew balance: <b>$${customer.balance.toFixed(2)}</b>`
-      ).catch(() => {});
-    }
   }
 }
 
@@ -772,8 +758,8 @@ async function fulfillProductsOrCart(invoice) {
 
     grantAnalyzerCredits({ customerId: invoice.customerId, qty: it.quantity }).catch(() => {});
 
-    const notif = await Notification.create({
-      userId: invoice.customerId,
+    await notifyCustomer({
+      customerId: invoice.customerId,
       type: 'order_delivered',
       title: { ru: 'Товар доставлен', en: 'Product delivered' },
       message: {
@@ -781,10 +767,6 @@ async function fulfillProductsOrCart(invoice) {
         en: `You purchased: ${it.titleEn}${it.quantity > 1 ? ` (x${it.quantity})` : ''}`
       },
       link: `/profile/orders?search=${order.uid}`
-    });
-
-    io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     createAdminNotif({
@@ -849,8 +831,9 @@ async function fulfillService(invoice) {
   const customer = await CustomerUser.findById(invoice.customerId);
   const serviceTitle = order.serviceSnapshot?.title || String(order.serviceId);
 
-  const notif = await Notification.create({
-    userId: invoice.customerId,
+  await notifyCustomer({
+    customerId: invoice.customerId,
+    customer,
     type: 'service_order_paid',
     title: { ru: 'Заявка на услугу оплачена', en: 'Service order paid' },
     message: {
@@ -858,9 +841,6 @@ async function fulfillService(invoice) {
       en: `Order ${order.uid} paid via CryptoCloud`
     },
     link: `/profile/service-orders?search=${order.uid}`
-  });
-  io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
-    id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
   });
 
   createAdminNotif({
@@ -943,8 +923,9 @@ async function fulfillPreorder(invoice) {
 
   const customer = await CustomerUser.findById(invoice.customerId);
 
-  const notif = await Notification.create({
-    userId: invoice.customerId,
+  await notifyCustomer({
+    customerId: invoice.customerId,
+    customer,
     type: 'preorder_status',
     title: { ru: 'Предзаказ оплачен', en: 'Preorder paid' },
     message: {
@@ -952,9 +933,6 @@ async function fulfillPreorder(invoice) {
       en: `Preorder ${preorder.uid} paid via CryptoCloud`
     },
     link: `/profile/preorders?search=${preorder.uid}`
-  });
-  io.of('/customer').to(`customer:${invoice.customerId}`).emit('notification', {
-    id: notif._id, type: notif.type, title: notif.title, message: notif.message, link: notif.link, createdAt: notif.createdAt
   });
 
   createAdminNotif({

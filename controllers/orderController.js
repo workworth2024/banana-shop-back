@@ -3,13 +3,12 @@ import Order from '../models/Order.js';
 import Preorder from '../models/Preorder.js';
 import DigitalItem from '../models/DigitalItem.js';
 import CustomerUser from '../models/CustomerUser.js';
-import Notification from '../models/Notification.js';
-import { io } from '../server.js';
 import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 export const getMyOrders = async (req, res) => {
   try {
@@ -299,8 +298,8 @@ export const updateOrderStatus = async (req, res) => {
 
     try {
       const statusLabels = ORDER_STATUS_LABELS[status] || { ru: status, en: status };
-      const notif = await Notification.create({
-        userId: order.customerId,
+      await notifyCustomer({
+        customerId: order.customerId,
         type: 'order_status',
         title: { ru: 'Статус заказа изменён', en: 'Order status updated' },
         message: {
@@ -308,10 +307,6 @@ export const updateOrderStatus = async (req, res) => {
           en: `Order ${order.uid}: status → ${statusLabels.en}`
         },
         link: '/profile/orders'
-      });
-      io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
-        id: notif._id, type: notif.type, title: notif.title,
-        message: notif.message, link: notif.link, createdAt: notif.createdAt
       });
     } catch {}
 

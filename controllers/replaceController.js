@@ -3,10 +3,10 @@ import DigitalItem from '../models/DigitalItem.js';
 import ReplaceRequest from '../models/ReplaceRequest.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
-import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { clawbackReferralReward } from '../utils/referral.js';
+import { notifyCustomer } from '../utils/notify.js';
 import path from 'path';
 import {
   bunnyUpload,
@@ -222,8 +222,8 @@ export const processReplacement = async (req, res) => {
       await replaceReq.save();
     }
 
-    const notif = await Notification.create({
-      userId: order.customerId,
+    await notifyCustomer({
+      customerId: order.customerId,
       type: 'order_replaced',
       title: { ru: 'Товар заменён', en: 'Product replaced' },
       message: {
@@ -231,11 +231,6 @@ export const processReplacement = async (req, res) => {
         en: `Order ${order.uid} has been replaced`
       },
       link: `/profile/orders?search=${order.uid}`
-    });
-
-    io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title,
-      message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     return res.status(200).json({ message: 'Замена выдана', order });
@@ -293,8 +288,9 @@ export const processRefund = async (req, res) => {
       clawbackReferralReward({ orderId: order._id, orderType: 'order' }).catch(() => {});
     }
 
-    const notif = await Notification.create({
-      userId: order.customerId,
+    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
+    await notifyCustomer({
+      customerId: order.customerId,
       type: 'order_refunded',
       title: { ru: 'Возврат средств', en: 'Refund issued' },
       message: {
@@ -302,12 +298,6 @@ export const processRefund = async (req, res) => {
         en: `Order ${order.uid} refunded $${refundAmount.toFixed(2)}`
       },
       link: `/profile/orders?search=${order.uid}`
-    });
-
-    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
-    io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title,
-      message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, order });

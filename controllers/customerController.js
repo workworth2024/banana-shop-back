@@ -2,7 +2,6 @@ import CustomerUser from '../models/CustomerUser.js';
 import CustomerSession from '../models/CustomerSession.js';
 import Transaction from '../models/Transaction.js';
 import CryptoCloudInvoice from '../models/CryptoCloudInvoice.js';
-import Notification from '../models/Notification.js';
 import Order from '../models/Order.js';
 import Preorder from '../models/Preorder.js';
 import ServiceOrder from '../models/ServiceOrder.js';
@@ -11,6 +10,7 @@ import { io, onlineCustomers } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 export const getCustomers = async (req, res) => {
   try {
@@ -215,8 +215,9 @@ export const adjustBalance = async (req, res) => {
 
     try {
       const isDeposit = parsed >= 0;
-      const notif = await Notification.create({
-        userId: customer._id,
+      await notifyCustomer({
+        customerId: customer._id,
+        customer,
         type: 'balance_updated',
         title: isDeposit
           ? { ru: 'Баланс пополнен', en: 'Balance topped up' }
@@ -231,10 +232,6 @@ export const adjustBalance = async (req, res) => {
               en: `$${Math.abs(parsed).toFixed(2)} has been deducted from your balance${note ? '. ' + note : ''}`
             },
         link: '/profile/wallet'
-      });
-      io.of('/customer').to(`customer:${customer._id}`).emit('notification', {
-        id: notif._id, type: notif.type, title: notif.title,
-        message: notif.message, link: notif.link, createdAt: notif.createdAt
       });
     } catch {}
 

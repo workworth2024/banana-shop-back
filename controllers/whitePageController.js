@@ -285,6 +285,46 @@ export const mintWhitePageDownload = async (req, res) => {
   }
 };
 
+/**
+ * Same as mintWhitePageDownload, but streams the file bytes back instead of
+ * returning the signed URL — the bot uses this so it can re-upload the
+ * archive as a Telegram document, same UX as order/preorder/service-order
+ * downloads (no "open this link in a browser" step).
+ */
+export const downloadWhitePageFile = async (req, res) => {
+  try {
+    const customer = req.customer;
+    const order = await WhitePageOrder.findOne({ uniqueId: req.params.uniqueId, customerId: customer._id });
+    if (!order) return res.status(404).json({ message: 'Task not found' });
+    if (order.status !== 'completed') {
+      return res.status(400).json({ message: 'File is available only for completed tasks' });
+    }
+
+    const data = await wpPost(`/history/${order.uniqueId}/mint-download`, { externalUserId: customer.uid });
+    const origin = wpDownloadOrigin();
+    const downloadUrl = data.downloadUrl?.startsWith('http') ? data.downloadUrl : `${origin}${data.downloadUrl}`;
+    if (!downloadUrl) return res.status(502).json({ message: 'Failed to mint download link' });
+
+    const upstream = await fetch(downloadUrl);
+    if (!upstream.ok || !upstream.body) {
+      return res.status(502).json({ message: 'Failed to download the generated file' });
+    }
+
+    const filename = order.archiveLabel
+      ? `${order.archiveLabel}.zip`
+      : `white-page-${order.uniqueId}.zip`;
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
+    const contentLength = upstream.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    const { Readable } = await import('stream');
+    return Readable.fromWeb(upstream.body).pipe(res);
+  } catch (err) {
+    if (!res.headersSent) return sendWpError(res, err, 'Failed to download the generated file');
+  }
+};
+
 export const regenerateWhitePage = async (req, res) => {
   try {
     const customer = req.customer;

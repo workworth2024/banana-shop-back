@@ -13,7 +13,7 @@ import { createTopupInvoice } from '../../controllers/cryptoCloudController.js';
 import { getMyOrders, getMyOrder, downloadMyItemFile } from '../../controllers/orderController.js';
 import { submitReplaceRequest } from '../../controllers/replaceController.js';
 import { getMyPreorders, downloadMyPreorderFile } from '../../controllers/preorderController.js';
-import { getMyWhitePages, getWhitePageDetail, mintWhitePageDownload } from '../../controllers/whitePageController.js';
+import { getMyWhitePages, getWhitePageDetail, downloadWhitePageFile } from '../../controllers/whitePageController.js';
 import { getMyServiceOrders, downloadResultFile } from '../../controllers/serviceOrderController.js';
 import { getMyReferralStats } from '../../controllers/referralController.js';
 import { getMyNotifications } from '../../controllers/notificationController.js';
@@ -52,7 +52,7 @@ router.get('/preorders/:uid/download/:fileId', resolveBotCustomer, downloadMyPre
 
 router.get('/white-pages', resolveBotCustomer, getMyWhitePages);
 router.get('/white-pages/:uniqueId', resolveBotCustomer, getWhitePageDetail);
-router.post('/white-pages/:uniqueId/download', resolveBotCustomer, mintWhitePageDownload);
+router.get('/white-pages/:uniqueId/download', resolveBotCustomer, downloadWhitePageFile);
 
 router.get('/service-orders', resolveBotCustomer, getMyServiceOrders);
 router.get('/service-orders/:uid/download/:fileId', resolveBotCustomer, downloadResultFile);

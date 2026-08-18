@@ -2,7 +2,6 @@ import ServiceOrder from '../models/ServiceOrder.js';
 import Service from '../models/Service.js';
 import CustomerUser from '../models/CustomerUser.js';
 import Transaction from '../models/Transaction.js';
-import Notification from '../models/Notification.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../utils/bunnyStorage.js';
@@ -11,6 +10,7 @@ import { creditReferralReward, clawbackReferralReward } from '../utils/referral.
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -27,16 +27,12 @@ async function sendStatusNotif(order) {
   if (!order.customerId) return;
   const titles = STATUS_TITLES[order.status];
   if (!titles) return;
-  const notif = await Notification.create({
-    userId: order.customerId,
+  await notifyCustomer({
+    customerId: order.customerId,
     type: 'service_order_status',
     title: titles,
     message: STATUS_MSGS[order.status](order.uid),
     link: `/profile/service-orders?search=${order.uid}`
-  });
-  io.of('/customer').to(`customer:${String(order.customerId)}`).emit('notification', {
-    id: notif._id, type: notif.type, title: notif.title,
-    message: notif.message, link: notif.link, createdAt: notif.createdAt
   });
 }
 
@@ -374,8 +370,9 @@ export const processServiceOrderRefund = async (req, res) => {
       clawbackReferralReward({ orderId: order._id, orderType: 'service_order' }).catch(() => {});
     }
 
-    const notif = await Notification.create({
-      userId: order.customerId,
+    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
+    await notifyCustomer({
+      customerId: order.customerId,
       type: 'service_order_refunded',
       title: { ru: 'Возврат средств', en: 'Refund issued' },
       message: {
@@ -383,12 +380,6 @@ export const processServiceOrderRefund = async (req, res) => {
         en: `Service order ${order.uid} refunded $${refundAmount.toFixed(2)}`
       },
       link: `/profile/service-orders?search=${order.uid}`
-    });
-
-    io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
-    io.of('/customer').to(`customer:${order.customerId}`).emit('notification', {
-      id: notif._id, type: notif.type, title: notif.title,
-      message: notif.message, link: notif.link, createdAt: notif.createdAt
     });
 
     return res.status(200).json({ message: `Возврат $${refundAmount.toFixed(2)} выполнен`, order });

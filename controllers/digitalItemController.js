@@ -6,7 +6,6 @@ import DigitalItem from '../models/DigitalItem.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import Order from '../models/Order.js';
-import Notification from '../models/Notification.js';
 import Transaction from '../models/Transaction.js';
 import CustomerUser from '../models/CustomerUser.js';
 import { io } from '../server.js';
@@ -19,6 +18,7 @@ import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
+import { notifyCustomer } from '../utils/notify.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -410,8 +410,13 @@ export const purchaseProduct = async (req, res) => {
 
     grantAnalyzerCredits({ customerId, qty }).catch(() => {});
 
-    const notif = await Notification.create({
-      userId: customerId,
+    io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
+      balance: customer.balance,
+      bonusBalance: customer.bonusBalance
+    });
+
+    await notifyCustomer({
+      customerId,
       type: 'order_delivered',
       title: { ru: 'Товар доставлен', en: 'Product delivered' },
       message: {
@@ -419,20 +424,6 @@ export const purchaseProduct = async (req, res) => {
         en: `You purchased: ${titleEn}${qty > 1 ? ` (x${qty})` : ''}`
       },
       link: `/profile/orders?search=${order.uid}`
-    });
-
-    io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
-      balance: customer.balance,
-      bonusBalance: customer.bonusBalance
-    });
-
-    io.of('/customer').to(`customer:${customerId}`).emit('notification', {
-      id: notif._id,
-      type: notif.type,
-      title: notif.title,
-      message: notif.message,
-      link: notif.link,
-      createdAt: notif.createdAt
     });
 
     createAdminNotif({
