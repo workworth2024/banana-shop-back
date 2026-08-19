@@ -9,10 +9,11 @@ import {
   getBotWallet,
   getBotWalletHistory
 } from '../../controllers/telegramBotController.js';
-import { createTopupInvoice } from '../../controllers/cryptoCloudController.js';
+import { createTopupInvoice, checkoutProduct, checkoutPreorder } from '../../controllers/cryptoCloudController.js';
+import { purchaseProduct } from '../../controllers/digitalItemController.js';
 import { getMyOrders, getMyOrder, downloadMyItemFile } from '../../controllers/orderController.js';
 import { submitReplaceRequest } from '../../controllers/replaceController.js';
-import { getMyPreorders, downloadMyPreorderFile } from '../../controllers/preorderController.js';
+import { getMyPreorders, downloadMyPreorderFile, createPreorder } from '../../controllers/preorderController.js';
 import { getMyWhitePages, getWhitePageDetail, downloadWhitePageFile } from '../../controllers/whitePageController.js';
 import { getMyServiceOrders, downloadResultFile } from '../../controllers/serviceOrderController.js';
 import { getMyReferralStats } from '../../controllers/referralController.js';
@@ -46,6 +47,12 @@ router.get('/orders', resolveBotCustomer, getMyOrders);
 router.get('/orders/:uid', resolveBotCustomer, getMyOrder);
 router.get('/orders/:uid/download/:itemUid', resolveBotCustomer, downloadMyItemFile);
 router.post('/orders/:uid/replace', resolveBotCustomer, submitReplaceRequest);
+
+// Catalog purchase flow — same controllers the storefront's BuyModal / preorder form use.
+router.post('/purchase', resolveBotCustomer, purchaseProduct);
+router.post('/checkout/product', resolveBotCustomer, checkoutProduct);
+router.post('/preorder', resolveBotCustomer, createPreorder);
+router.post('/checkout/preorder', resolveBotCustomer, checkoutPreorder);
 
 router.get('/preorders', resolveBotCustomer, getMyPreorders);
 router.get('/preorders/:uid/download/:fileId', resolveBotCustomer, downloadMyPreorderFile);
