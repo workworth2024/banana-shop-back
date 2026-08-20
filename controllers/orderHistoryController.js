@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Order from '../models/Order.js';
 import Preorder from '../models/Preorder.js';
 import ServiceOrder from '../models/ServiceOrder.js';
+import WhitePageOrder from '../models/WhitePageOrder.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 
 const ORDER_NORMALIZE = [
@@ -61,17 +62,54 @@ const SERVICE_NORMALIZE = [
   }
 ];
 
+// WhitePageOrder already has its own `type` field (landing-page/blog) and a
+// `uniqueId` instead of `uid` — keep the former under `pageType` and alias the
+// latter to `uid` so it plugs into the shared search/display fields below.
+const WHITEPAGE_NORMALIZE = [
+  {
+    $addFields: {
+      uid: '$uniqueId',
+      pageType: '$type',
+      type: 'white_page',
+      displayTitle: {
+        $let: {
+          vars: {
+            title: {
+              $ifNull: [
+                { $cond: [{ $ne: ['$domainName', ''] }, '$domainName', null] },
+                {
+                  $ifNull: [
+                    { $cond: [{ $ne: ['$companyName', ''] }, '$companyName', null] },
+                    { $cond: [{ $ne: ['$archiveLabel', ''] }, '$archiveLabel', null] }
+                  ]
+                }
+              ]
+            }
+          },
+          in: { $ifNull: ['$$title', '$uniqueId'] }
+        }
+      },
+      displayAmount: '$price',
+      displayStatus: '$status',
+      displayQuantity: 1,
+      totalQty: 1
+    }
+  }
+];
+
 function buildUnionPipeline(type) {
   if (type === 'order') return { Model: Order, pipeline: [...ORDER_NORMALIZE] };
   if (type === 'preorder') return { Model: Preorder, pipeline: [...PREORDER_NORMALIZE] };
   if (type === 'service_order') return { Model: ServiceOrder, pipeline: [...SERVICE_NORMALIZE] };
+  if (type === 'white_page') return { Model: WhitePageOrder, pipeline: [...WHITEPAGE_NORMALIZE] };
 
   return {
     Model: Order,
     pipeline: [
       ...ORDER_NORMALIZE,
       { $unionWith: { coll: Preorder.collection.name, pipeline: PREORDER_NORMALIZE } },
-      { $unionWith: { coll: ServiceOrder.collection.name, pipeline: SERVICE_NORMALIZE } }
+      { $unionWith: { coll: ServiceOrder.collection.name, pipeline: SERVICE_NORMALIZE } },
+      { $unionWith: { coll: WhitePageOrder.collection.name, pipeline: WHITEPAGE_NORMALIZE } }
     ]
   };
 }
@@ -151,6 +189,7 @@ export const getOrderHistoryFilters = async (req, res) => {
       ...ORDER_NORMALIZE,
       { $unionWith: { coll: Preorder.collection.name, pipeline: PREORDER_NORMALIZE } },
       { $unionWith: { coll: ServiceOrder.collection.name, pipeline: SERVICE_NORMALIZE } },
+      { $unionWith: { coll: WhitePageOrder.collection.name, pipeline: WHITEPAGE_NORMALIZE } },
       { $match: { displayTitle: { $nin: [null, ''] } } },
       { $group: { _id: '$displayTitle' } },
       { $sort: { _id: 1 } },
