@@ -259,6 +259,10 @@ export const verifyRegistration = async (req, res) => {
     await PendingRegistration.deleteOne({ _id: pending._id });
 
     await tryRedeemPromoOnRegister(newUser._id, pending.promoCode);
+    // A balance-type promo credits the wallet as a side effect of the call above —
+    // re-fetch so the response (and the balance shown right after signup) reflects it,
+    // instead of the pre-credit snapshot taken at CustomerUser.create() time.
+    const freshUser = pending.promoCode ? (await CustomerUser.findById(newUser._id)) || newUser : newUser;
 
     const token = generateToken(newUser._id);
     const expire = new Date(Date.now() + COOKIE_MAX_AGE);
@@ -286,7 +290,7 @@ export const verifyRegistration = async (req, res) => {
 
     return res.status(201).json({
       message: 'Account created successfully',
-      user: safeUser(newUser)
+      user: safeUser(freshUser)
     });
   } catch (error) {
     console.error('[CustomerAuth] verifyRegistration error:', error);
