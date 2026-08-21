@@ -136,6 +136,14 @@ const customerUserSchema = new mongoose.Schema({
     dailyUsed: { type: Number, default: 0, min: 0 },
     dailyDate: { type: String, default: null }, // YYYY-MM-DD, resets dailyUsed when it changes
     bonusCredits: { type: Number, default: 0, min: 0 } // permanent, earned per purchased unit
+  },
+  // Points at the customer's single currently-active discount PromoRedemption (if any).
+  // Balance-type promo codes don't use this — they credit the balance immediately on
+  // redemption instead of staying "active" until spent.
+  activePromoRedemptionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PromoRedemption',
+    default: null
   }
 }, { timestamps: true });
 

@@ -26,6 +26,10 @@ const pendingRegistrationSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  promoCode: {
+    type: String,
+    default: null
+  },
   trackingCode: {
     type: String,
     default: null

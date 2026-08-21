@@ -19,6 +19,7 @@ import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { getEffectiveUnitPrice } from '../utils/pricing.js';
 import { notifyCustomer } from '../utils/notify.js';
+import { tryApplyDiscount } from '../utils/promoCode.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -295,10 +296,14 @@ export const purchaseProduct = async (req, res) => {
   }
 
   const unitPrice = getEffectiveUnitPrice(product, qty);
-  const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
+  const grossAmount = parseFloat((unitPrice * qty).toFixed(2));
 
   const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
   if (!preCustomer) return res.status(404).json({ message: 'Customer not found' });
+
+  const promoScope = productType === 'YoutubeProduct' ? 'youtube' : 'google_ads';
+  const discount = await tryApplyDiscount(customerId, promoScope, grossAmount).catch(() => null);
+  const totalAmount = discount ? parseFloat((grossAmount - discount.discountAmount).toFixed(2)) : grossAmount;
 
   const availBonus = useBonusBalance ? (preCustomer.bonusBalance || 0) : 0;
   const fromBonus = Math.min(availBonus, totalAmount);
@@ -389,6 +394,8 @@ export const purchaseProduct = async (req, res) => {
     });
 
     await syncProductCounts(productId, productType);
+
+    if (discount) discount.consume('order', order._id).catch(() => {});
 
     creditReferralReward({
       customerId,

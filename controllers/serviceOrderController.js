@@ -11,6 +11,7 @@ import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { notifyCustomer } from '../utils/notify.js';
+import { tryApplyDiscount } from '../utils/promoCode.js';
 
 const STATUS_TITLES = {
   in_progress: { ru: 'Услуга взята в работу', en: 'Service in progress' },
@@ -46,8 +47,8 @@ export const createServiceOrder = async (req, res) => {
     const service = await Service.findById(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
 
-    const chargeAmount = parseFloat(Number(service.price) || 0);
-    if (chargeAmount <= 0) {
+    const grossAmount = parseFloat(Number(service.price) || 0);
+    if (grossAmount <= 0) {
       return res.status(400).json({ message: 'Стоимость услуги не задана' });
     }
 
@@ -62,6 +63,9 @@ export const createServiceOrder = async (req, res) => {
     const useBonusBool = useBonusBalance === true || useBonusBalance === 'true';
     const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
     if (!preCustomer) return res.status(404).json({ message: 'Пользователь не найден' });
+
+    const discount = await tryApplyDiscount(customerId, 'service', grossAmount).catch(() => null);
+    const chargeAmount = discount ? parseFloat((grossAmount - discount.discountAmount).toFixed(2)) : grossAmount;
 
     const availBonus = useBonusBool ? (preCustomer.bonusBalance || 0) : 0;
     const fromBonus = Math.min(availBonus, chargeAmount);
@@ -140,6 +144,8 @@ export const createServiceOrder = async (req, res) => {
         persistedOrderId = null;
         throw txErr;
       }
+
+      if (discount) discount.consume('service_order', order._id).catch(() => {});
 
       creditReferralReward({
         customerId,

@@ -10,6 +10,18 @@ import TelegramLoginToken from '../models/TelegramLoginToken.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { attachAcquisition } from '../utils/tracking.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/mailer.js';
+import { redeemPromoCode, PromoError } from '../utils/promoCode.js';
+
+/** Best-effort: a promo code picked up from a shareable link at registration time
+ * should never block or roll back account creation if it's invalid/expired/etc. */
+async function tryRedeemPromoOnRegister(customerId, promoCode) {
+  if (!promoCode) return;
+  try {
+    await redeemPromoCode({ customerId, code: promoCode, source: 'register' });
+  } catch (e) {
+    if (!(e instanceof PromoError)) console.error('[CustomerAuth] promo redeem on register failed:', e);
+  }
+}
 
 const COOKIE_NAME = 'customer_token';
 const JWT_EXPIRES_IN = '7d';
@@ -116,7 +128,7 @@ const verifyCaptchaToken = (token) => {
 
 export const register = async (req, res) => {
   try {
-    const { username, email, password, telegramUsername, referralCode, captchaToken } = req.body;
+    const { username, email, password, telegramUsername, referralCode, promoCode, captchaToken } = req.body;
 
     if (!verifyCaptchaToken(captchaToken)) {
       return res.status(400).json({ message: 'Captcha verification required' });
@@ -169,6 +181,7 @@ export const register = async (req, res) => {
         password: hashedPassword,
         telegramUsername: telegramUsername?.trim() || null,
         referralCode: referralCode || null,
+        promoCode: promoCode || null,
         trackingCode: req.body?.trackingCode || null,
         codeHash,
         attempts: 0,
@@ -244,6 +257,8 @@ export const verifyRegistration = async (req, res) => {
     });
 
     await PendingRegistration.deleteOne({ _id: pending._id });
+
+    await tryRedeemPromoOnRegister(newUser._id, pending.promoCode);
 
     const token = generateToken(newUser._id);
     const expire = new Date(Date.now() + COOKIE_MAX_AGE);

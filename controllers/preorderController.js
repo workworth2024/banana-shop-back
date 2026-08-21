@@ -13,6 +13,7 @@ import { recordPurchase } from '../utils/tracking.js';
 import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { isValidGeo } from '../utils/geos.js';
 import { notifyCustomer } from '../utils/notify.js';
+import { tryApplyDiscount } from '../utils/promoCode.js';
 
 const NOTIF_TITLES = {
   in_progress: { ru: 'Предзаказ взят в работу', en: 'Preorder in progress' },
@@ -113,10 +114,14 @@ export const createPreorder = async (req, res) => {
       return res.status(400).json({ message: 'Предзаказ этого товара временно недоступен' });
     }
 
-    const totalAmount = parseFloat((unitPrice * qty).toFixed(2));
+    const grossAmount = parseFloat((unitPrice * qty).toFixed(2));
 
     const preCustomer = await CustomerUser.findById(customerId).select('balance bonusBalance');
     if (!preCustomer) return res.status(404).json({ message: 'Пользователь не найден' });
+
+    const promoScope = productType === 'youtube' ? 'youtube' : 'google_ads';
+    const discount = await tryApplyDiscount(customerId, promoScope, grossAmount).catch(() => null);
+    const totalAmount = discount ? parseFloat((grossAmount - discount.discountAmount).toFixed(2)) : grossAmount;
 
     const availBonus = useBonusBalance ? (preCustomer.bonusBalance || 0) : 0;
     const fromBonus = Math.min(availBonus, totalAmount);
@@ -172,6 +177,8 @@ export const createPreorder = async (req, res) => {
         note: `Preorder ${preorder.uid} x${qty}${fromBonus > 0 ? ` (bonus $${fromBonus.toFixed(2)} + balance $${fromMain.toFixed(2)})` : ''}`
       });
       await Preorder.updateOne({ _id: preorder._id }, { paymentTransactionUid: txDoc.uid });
+
+      if (discount) discount.consume('preorder', preorder._id).catch(() => {});
 
       creditReferralReward({
         customerId,

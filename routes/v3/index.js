@@ -29,6 +29,7 @@ import orderHistoryRoutes from './orderHistoryRoutes.js';
 import analyzerRoutes from './analyzerRoutes.js';
 import teamRoutes from './teamRoutes.js';
 import telegramBotRoutes from './telegramBotRoutes.js';
+import promoCodeRoutes from './promoCodeRoutes.js';
 
 const router = express.Router();
 
@@ -62,5 +63,6 @@ router.use('/order-history', orderHistoryRoutes);
 router.use('/analyzer', analyzerRoutes);
 router.use('/team', teamRoutes);
 router.use('/telegram-bot', telegramBotRoutes);
+router.use('/promo-codes', promoCodeRoutes);
 
 export default router;
