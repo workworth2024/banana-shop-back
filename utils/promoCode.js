@@ -169,7 +169,7 @@ export async function redeemPromoCode({ customerId, code, source = 'manual', for
     link: '/profile/wallet'
   }).catch(() => {});
 
-  return { status: 'credited', amount: promoCode.amount, balance: updatedCustomer.balance, redemptionId: redemption._id };
+  return { status: 'credited', amount: promoCode.amount, balance: updatedCustomer.balance, redemptionId: redemption._id, promo: promoSummary(promoCode) };
 }
 
 export async function cancelActivePromoCode(customerId) {

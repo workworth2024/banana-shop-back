@@ -13,13 +13,16 @@ import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/mailer.j
 import { redeemPromoCode, PromoError } from '../utils/promoCode.js';
 
 /** Best-effort: a promo code picked up from a shareable link at registration time
- * should never block or roll back account creation if it's invalid/expired/etc. */
+ * should never block or roll back account creation if it's invalid/expired/etc.
+ * Returns the redemption result (so the frontend can show a "you got $X" popup)
+ * or null if nothing was applied. */
 async function tryRedeemPromoOnRegister(customerId, promoCode) {
-  if (!promoCode) return;
+  if (!promoCode) return null;
   try {
-    await redeemPromoCode({ customerId, code: promoCode, source: 'register' });
+    return await redeemPromoCode({ customerId, code: promoCode, source: 'register' });
   } catch (e) {
     if (!(e instanceof PromoError)) console.error('[CustomerAuth] promo redeem on register failed:', e);
+    return null;
   }
 }
 
@@ -258,7 +261,7 @@ export const verifyRegistration = async (req, res) => {
 
     await PendingRegistration.deleteOne({ _id: pending._id });
 
-    await tryRedeemPromoOnRegister(newUser._id, pending.promoCode);
+    const promoResult = await tryRedeemPromoOnRegister(newUser._id, pending.promoCode);
     // A balance-type promo credits the wallet as a side effect of the call above —
     // re-fetch so the response (and the balance shown right after signup) reflects it,
     // instead of the pre-credit snapshot taken at CustomerUser.create() time.
@@ -290,7 +293,8 @@ export const verifyRegistration = async (req, res) => {
 
     return res.status(201).json({
       message: 'Account created successfully',
-      user: safeUser(freshUser)
+      user: safeUser(freshUser),
+      promo: promoResult ? { status: promoResult.status, amount: promoResult.amount, promo: promoResult.promo } : null
     });
   } catch (error) {
     console.error('[CustomerAuth] verifyRegistration error:', error);
