@@ -18,6 +18,7 @@ import { getMyWhitePages, getWhitePageDetail, downloadWhitePageFile } from '../.
 import { getMyServiceOrders, downloadResultFile } from '../../controllers/serviceOrderController.js';
 import { getMyReferralStats } from '../../controllers/referralController.js';
 import { getMyNotifications } from '../../controllers/notificationController.js';
+import { getMyPromoCodes, redeemPromoCodeHandler, cancelActivePromoCodeHandler } from '../../controllers/promoCodeController.js';
 import { verifyBotInternal, resolveBotCustomer } from '../../middlewares/botInternalMiddleware.js';
 
 const router = express.Router();
@@ -66,5 +67,9 @@ router.get('/service-orders/:uid/download/:fileId', resolveBotCustomer, download
 
 router.get('/referral', resolveBotCustomer, getMyReferralStats);
 router.get('/notifications', resolveBotCustomer, getMyNotifications);
+
+router.get('/promo', resolveBotCustomer, getMyPromoCodes);
+router.post('/promo/redeem', resolveBotCustomer, redeemPromoCodeHandler);
+router.post('/promo/cancel', resolveBotCustomer, cancelActivePromoCodeHandler);
 
 export default router;
