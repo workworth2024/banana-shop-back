@@ -158,11 +158,17 @@ export const uploadDigitalItems = async (req, res) => {
 export const getDigitalItems = async (req, res) => {
   try {
     const { productId, productType } = req.params;
-    const { page = 1, limit = 20, status, search, startDate, endDate, geo } = req.query;
+    const { page = 1, limit = 20, status, search, startDate, endDate, geo, orderUid } = req.query;
 
     const query = { productId, productType };
     if (status) query.status = status;
     if (geo) query.geo = String(geo).toUpperCase();
+    if (orderUid) {
+      const safeOrderUid = escapeRegex(String(orderUid).trim().slice(0, 100));
+      const order = await Order.findOne({ uid: { $regex: `^${safeOrderUid}$`, $options: 'i' } }).select('_id');
+      // No matching order — force an empty result set rather than ignoring the filter.
+      query.orderId = order ? order._id : new mongoose.Types.ObjectId();
+    }
     if (search) {
       const safe = escapeRegex(String(search).slice(0, 100));
       query.$or = [
@@ -190,7 +196,8 @@ export const getDigitalItems = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(Number(limit))
-      .select('-filePath');
+      .select('-filePath')
+      .populate('orderId', 'uid');
 
     const total = await DigitalItem.countDocuments(query);
     const baseStatsQuery = { productId, productType };
