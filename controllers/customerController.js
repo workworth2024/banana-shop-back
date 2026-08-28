@@ -14,7 +14,11 @@ import { notifyCustomer } from '../utils/notify.js';
 
 export const getCustomers = async (req, res) => {
   try {
-    const { page = 1, limit = 20, search = '', status, sortBy = 'createdAt', order = 'desc' } = req.query;
+    const {
+      page = 1, limit = 20, search = '', status, sortBy = 'createdAt', order = 'desc',
+      minBalance, maxBalance, minBonusBalance, maxBonusBalance,
+      lastSeenFrom, lastSeenTo
+    } = req.query;
 
     const query = {};
 
@@ -32,6 +36,29 @@ export const getCustomers = async (req, res) => {
       query.status = status === 'true';
     }
 
+    if (minBalance !== undefined && minBalance !== '') {
+      query.balance = { ...query.balance, $gte: parseFloat(minBalance) };
+    }
+    if (maxBalance !== undefined && maxBalance !== '') {
+      query.balance = { ...query.balance, $lte: parseFloat(maxBalance) };
+    }
+    if (minBonusBalance !== undefined && minBonusBalance !== '') {
+      query.bonusBalance = { ...query.bonusBalance, $gte: parseFloat(minBonusBalance) };
+    }
+    if (maxBonusBalance !== undefined && maxBonusBalance !== '') {
+      query.bonusBalance = { ...query.bonusBalance, $lte: parseFloat(maxBonusBalance) };
+    }
+
+    if (lastSeenFrom || lastSeenTo) {
+      query.lastSeen = {};
+      if (lastSeenFrom) query.lastSeen.$gte = new Date(lastSeenFrom);
+      if (lastSeenTo) {
+        const end = new Date(lastSeenTo);
+        end.setHours(23, 59, 59, 999);
+        query.lastSeen.$lte = end;
+      }
+    }
+
     const skip = (Number(page) - 1) * Number(limit);
     const sortOptions = { [sortBy]: order === 'desc' ? -1 : 1 };
 
@@ -39,7 +66,8 @@ export const getCustomers = async (req, res) => {
       .sort(sortOptions)
       .skip(skip)
       .limit(Number(limit))
-      .select('-password -twoFASecret');
+      .select('-password -twoFASecret')
+      .populate('referredBy', 'username uid telegramUsername');
 
     const total = await CustomerUser.countDocuments(query);
 
