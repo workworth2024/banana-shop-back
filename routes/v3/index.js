@@ -30,6 +30,7 @@ import analyzerRoutes from './analyzerRoutes.js';
 import teamRoutes from './teamRoutes.js';
 import telegramBotRoutes from './telegramBotRoutes.js';
 import promoCodeRoutes from './promoCodeRoutes.js';
+import textHiderRoutes from './textHiderRoutes.js';
 
 const router = express.Router();
 
@@ -64,5 +65,6 @@ router.use('/analyzer', analyzerRoutes);
 router.use('/team', teamRoutes);
 router.use('/telegram-bot', telegramBotRoutes);
 router.use('/promo-codes', promoCodeRoutes);
+router.use('/text-hider', textHiderRoutes);
 
 export default router;
