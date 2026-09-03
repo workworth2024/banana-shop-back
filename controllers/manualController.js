@@ -141,12 +141,16 @@ export const updateManual = async (req, res) => {
       updateData.desc = { ru: req.body['desc.ru'] || '', en: req.body['desc.en'] || '' };
     }
 
-    const needsOld = req.file || updateData.content;
+    const removeFile = req.body.removeFile === 'true' && !req.file;
+    const needsOld = req.file || removeFile || updateData.content;
     if (needsOld) {
       const old = await Manual.findById(id).select('path_to_file content');
       if (req.file) {
         deleteManualFile(old?.path_to_file);
         updateData.path_to_file = await uploadManualFile(req.file);
+      } else if (removeFile) {
+        deleteManualFile(old?.path_to_file);
+        updateData.path_to_file = '';
       }
       if (updateData.content && old) {
         const oldUrls = [
