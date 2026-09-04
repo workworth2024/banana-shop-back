@@ -65,6 +65,8 @@ export async function sendBroadcastNow(broadcastId) {
             title: broadcast.name,
             message: broadcast.text,
             imageUrl: broadcast.imageUrl || null,
+            link: broadcast.buttonUrl || null,
+            buttonText: broadcast.buttonText || null,
             broadcastId: broadcast._id
           });
           io.of('/customer').to(`customer:${recipient._id}`).emit('notification', {
@@ -74,6 +76,7 @@ export async function sendBroadcastNow(broadcastId) {
             message: notif.message,
             imageUrl: notif.imageUrl,
             link: notif.link,
+            buttonText: notif.buttonText,
             createdAt: notif.createdAt
           });
           siteSentCount++;
@@ -83,7 +86,11 @@ export async function sendBroadcastNow(broadcastId) {
           const caption = broadcast.imageUrl
             ? escapeHtml(broadcast.text)
             : `📢 <b>${escapeHtml(broadcast.name)}</b>\n\n${escapeHtml(broadcast.text)}`;
-          const ok = await notifyTelegram(recipient.telegramId, caption, { photoUrl: broadcast.imageUrl });
+          const ok = await notifyTelegram(recipient.telegramId, caption, {
+            photoUrl: broadcast.imageUrl,
+            buttonText: broadcast.buttonText || null,
+            buttonUrl: broadcast.buttonUrl || null
+          });
           if (ok) botSentCount++;
           else failedCount++;
         }

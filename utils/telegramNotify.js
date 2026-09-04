@@ -3,7 +3,7 @@
  * who's linked their Telegram account gets a live push (e.g. "balance topped
  * up") right in the chat, not just a socket event for the open website tab.
  */
-export async function notifyTelegram(telegramId, text, { photoUrl } = {}) {
+export async function notifyTelegram(telegramId, text, { photoUrl, buttonText, buttonUrl } = {}) {
   try {
     if (!telegramId) return;
     const botServiceUrl = process.env.BOT_SERVICE_URL;
@@ -16,7 +16,13 @@ export async function notifyTelegram(telegramId, text, { photoUrl } = {}) {
         'Content-Type': 'application/json',
         'X-Bot-Internal-Key': key
       },
-      body: JSON.stringify({ telegramId: String(telegramId), text, photoUrl: photoUrl || undefined })
+      body: JSON.stringify({
+        telegramId: String(telegramId),
+        text,
+        photoUrl: photoUrl || undefined,
+        buttonText: buttonText || undefined,
+        buttonUrl: buttonUrl || undefined
+      })
     });
     return res.ok;
   } catch (e) {

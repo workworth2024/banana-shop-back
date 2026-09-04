@@ -84,6 +84,12 @@ function validateBroadcastInput(body) {
     return 'Выберите сегмент';
   }
   if (!body.deliverToSite && !body.deliverToBot) return 'Выберите хотя бы один способ доставки';
+  if ((body.buttonText && !body.buttonUrl) || (!body.buttonText && body.buttonUrl)) {
+    return 'Укажите и название кнопки, и ссылку — или не заполняйте оба поля';
+  }
+  if (body.buttonUrl) {
+    try { new URL(body.buttonUrl); } catch { return 'Некорректная ссылка для кнопки'; }
+  }
   if (body.launchType === 'scheduled') {
     if (!body.scheduledAt || Number.isNaN(new Date(body.scheduledAt).getTime())) return 'Укажите дату и время отложенного запуска';
     if (new Date(body.scheduledAt).getTime() <= Date.now()) return 'Дата отложенного запуска должна быть в будущем';
@@ -98,7 +104,7 @@ export const createBroadcast = async (req, res) => {
 
     const {
       name, text, launchType, scheduledAt, audienceType, customerIds, segmentId,
-      deliverToSite, deliverToBot, imageUrl
+      deliverToSite, deliverToBot, imageUrl, buttonText, buttonUrl
     } = req.body;
 
     const validCustomerIds = Array.isArray(customerIds) ? customerIds.filter((id) => mongoose.isValidObjectId(id)) : [];
@@ -114,6 +120,8 @@ export const createBroadcast = async (req, res) => {
       deliverToSite: deliverToSite !== false,
       deliverToBot: deliverToBot !== false,
       imageUrl: imageUrl || null,
+      buttonText: buttonText ? String(buttonText).trim().slice(0, 60) : null,
+      buttonUrl: buttonUrl ? String(buttonUrl).trim() : null,
       // Always starts as 'scheduled' — sendBroadcastNow() itself flips it to
       // 'sending' then 'sent'/'failed'. Pre-setting 'sending' here would make
       // its own re-entrancy guard (skip if already sending/sent) bail out

@@ -56,6 +56,20 @@ const broadcastSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Optional CTA — a named button with a link. Site: rendered in the popup
+  // and as the notification's "link" action. Bot: sent as an inline keyboard
+  // button attached to the message/photo.
+  buttonText: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 60
+  },
+  buttonUrl: {
+    type: String,
+    default: null,
+    trim: true
+  },
   status: {
     type: String,
     enum: ['scheduled', 'sending', 'sent', 'failed', 'cancelled'],

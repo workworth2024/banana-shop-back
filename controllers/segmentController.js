@@ -1,7 +1,41 @@
 import Segment from '../models/Segment.js';
 import CustomerUser from '../models/CustomerUser.js';
+import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
+import YoutubeProduct from '../models/YoutubeProduct.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { SEGMENT_FIELDS, sanitizeConditions, buildSegmentPipeline } from '../utils/segmentEngine.js';
+
+// Powers the "Последний заказанный товар" condition's searchable select —
+// products live in two separate collections, merged here into one list.
+export const searchSegmentProducts = async (req, res) => {
+  try {
+    const search = String(req.query.search || '').slice(0, 100);
+    // `ids` resolves specific products back to their titles (e.g. rendering
+    // a saved segment's condition summary) instead of a text search.
+    const idsParam = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+    const query = idsParam.length
+      ? { _id: { $in: idsParam.filter((id) => id.match(/^[a-f0-9]{24}$/i)) } }
+      : search
+        ? { $or: [{ 'title.ru': { $regex: escapeRegex(search), $options: 'i' } }, { 'title.en': { $regex: escapeRegex(search), $options: 'i' } }] }
+        : {};
+
+    const [googleAds, youtube] = await Promise.all([
+      GoogleAdsProduct.find(query).select('title').limit(idsParam.length ? idsParam.length : 15).lean(),
+      YoutubeProduct.find(query).select('title').limit(idsParam.length ? idsParam.length : 15).lean()
+    ]);
+
+    const items = [
+      ...googleAds.map((p) => ({ _id: p._id, title: p.title?.ru || p.title?.en || '—', productType: 'Google Ads' })),
+      ...youtube.map((p) => ({ _id: p._id, title: p.title?.ru || p.title?.en || '—', productType: 'YouTube' }))
+    ];
+
+    return res.json({ items });
+  } catch (error) {
+    console.error('[Segment] searchSegmentProducts:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
 
 export const getSegmentFields = async (_req, res) => {
   const fields = Object.entries(SEGMENT_FIELDS).map(([key, def]) => ({

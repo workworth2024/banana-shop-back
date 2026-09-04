@@ -29,6 +29,12 @@ const notificationSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  // Optional named CTA button (broadcasts only) — link is also usable via
+  // the existing generic `link` field, buttonText is just its label.
+  buttonText: {
+    type: String,
+    default: null
+  },
   broadcastId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Broadcast',

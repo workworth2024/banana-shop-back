@@ -7,14 +7,17 @@ import { escapeRegex } from './safeQuery.js';
 //   number  -> { field, operator: gt|gte|lt|lte|eq, value }
 //   date    -> { field, value: from (ISO), valueTo: to (ISO) } — either may be omitted
 //   boolean -> { field, value: true|false }
+//   exists  -> { field, value: true|false } — does the field have a non-empty value at all
 //   text    -> { field, value } — case-insensitive "contains"
 //   select  -> { field, value } — exact match against one of `options`
+//   product -> { field, value } — exact match against a specific product _id
+//              (options come from GET /segments/products?search=, not a fixed list)
 export const SEGMENT_FIELDS = {
   registrationDate: { type: 'date', path: 'createdAt', label: 'Дата регистрации' },
   lastActivityDate: { type: 'date', path: 'lastSeen', label: 'Дата последней активности' },
   isOnline: { type: 'boolean', label: 'Онлайн сейчас' },
   hasSiteAccount: { type: 'boolean', path: 'hasSiteAccount', label: 'Есть аккаунт на сайте' },
-  telegramUsername: { type: 'text', path: 'telegramUsername', label: 'Ник Telegram' },
+  telegramUsername: { type: 'exists', path: 'telegramUsername', label: 'Есть ник Telegram' },
   balance: { type: 'number', path: 'balance', label: 'Сумма на балансе' },
   depositsSum: { type: 'number', path: 'depositsSum', label: 'Сумма депозитов' },
   depositsCount: { type: 'number', path: 'depositsCount', label: 'Количество депозитов' },
@@ -24,15 +27,7 @@ export const SEGMENT_FIELDS = {
   lastPurchaseDate: { type: 'date', path: 'lastPurchaseDate', label: 'Дата последней покупки' },
   lastServiceDate: { type: 'date', path: 'lastServiceDate', label: 'Дата последней услуги' },
   lastPreorderDate: { type: 'date', path: 'lastPreorderDate', label: 'Дата последнего предзаказа' },
-  lastProductCategory: {
-    type: 'select',
-    path: 'lastProductCategory',
-    label: 'Последний заказанный товар',
-    options: [
-      { value: 'google_ads', label: 'Google Ads' },
-      { value: 'youtube', label: 'YouTube' }
-    ]
-  }
+  lastPurchasedProduct: { type: 'product', path: 'lastProductId', label: 'Последний заказанный товар' }
 };
 
 const NUMBER_OPERATORS = { gt: '$gt', gte: '$gte', lt: '$lt', lte: '$lte', eq: '$eq' };
@@ -97,7 +92,7 @@ const COMPUTE_STAGE = {
     lastPreorderDate: {
       $cond: [{ $gt: [{ $size: '$_preorders' }, 0] }, { $max: '$_preorders.createdAt' }, null]
     },
-    lastProductCategory: {
+    lastProductId: {
       $let: {
         vars: { maxDate: { $max: '$_orders.createdAt' } },
         in: {
@@ -110,15 +105,7 @@ const COMPUTE_STAGE = {
                 ]
               }
             },
-            in: {
-              $switch: {
-                branches: [
-                  { case: { $eq: ['$$lastOrder.productType', 'GoogleAdsProduct'] }, then: 'google_ads' },
-                  { case: { $eq: ['$$lastOrder.productType', 'YoutubeProduct'] }, then: 'youtube' }
-                ],
-                default: null
-              }
-            }
+            in: '$$lastOrder.productId'
           }
         }
       }
@@ -167,6 +154,12 @@ function buildConditionMatch(condition, onlineObjectIds) {
     return { [def.path]: !!value };
   }
 
+  if (def.type === 'exists') {
+    return value
+      ? { [def.path]: { $exists: true, $nin: [null, ''] } }
+      : { $or: [{ [def.path]: { $exists: false } }, { [def.path]: null }, { [def.path]: '' }] };
+  }
+
   if (def.type === 'text') {
     const str = String(value ?? '').trim().slice(0, 100);
     if (!str) return null;
@@ -176,6 +169,11 @@ function buildConditionMatch(condition, onlineObjectIds) {
   if (def.type === 'select') {
     if (!def.options.some((o) => o.value === value)) return null;
     return { [def.path]: value };
+  }
+
+  if (def.type === 'product') {
+    if (!mongoose.isValidObjectId(value)) return null;
+    return { [def.path]: new mongoose.Types.ObjectId(value) };
   }
 
   return null;

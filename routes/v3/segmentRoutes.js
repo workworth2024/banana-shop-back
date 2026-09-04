@@ -1,7 +1,8 @@
 import express from 'express';
 import {
   getSegmentFields, previewSegmentCount, listSegments, getSegment,
-  createSegment, updateSegment, recomputeSegment, deleteSegment, getSegmentMembers
+  createSegment, updateSegment, recomputeSegment, deleteSegment, getSegmentMembers,
+  searchSegmentProducts
 } from '../../controllers/segmentController.js';
 import { verifyToken } from '../../middlewares/authMiddleware.js';
 
@@ -16,6 +17,7 @@ const canManage = (req, res, next) => {
 router.use(verifyToken, canManage);
 
 router.get('/fields', getSegmentFields);
+router.get('/products', searchSegmentProducts);
 router.post('/preview', previewSegmentCount);
 
 router.get('/', listSegments);
