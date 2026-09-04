@@ -28,6 +28,26 @@ export const getMyNotifications = async (req, res) => {
   }
 };
 
+// Powers the "you have a new broadcast" popup: shown on page load (not just
+// live via socket) so a customer who wasn't online when it was sent still
+// sees it next time they visit — closing the popup marks it read (same as
+// opening it in the notifications list), but it always stays in that list.
+export const getUnreadBroadcasts = async (req, res) => {
+  try {
+    const notifications = await Notification.find({
+      userId: req.customer._id,
+      type: 'broadcast',
+      isRead: false
+    })
+      .sort({ createdAt: 1 })
+      .limit(10);
+    return res.status(200).json({ notifications });
+  } catch (error) {
+    console.error('[Notifications] getUnreadBroadcasts error:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 export const getUnreadCount = async (req, res) => {
   try {
     const unread = await Notification.countDocuments({

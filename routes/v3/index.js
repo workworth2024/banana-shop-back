@@ -32,6 +32,7 @@ import telegramBotRoutes from './telegramBotRoutes.js';
 import promoCodeRoutes from './promoCodeRoutes.js';
 import textHiderRoutes from './textHiderRoutes.js';
 import segmentRoutes from './segmentRoutes.js';
+import broadcastRoutes from './broadcastRoutes.js';
 
 const router = express.Router();
 
@@ -68,5 +69,6 @@ router.use('/telegram-bot', telegramBotRoutes);
 router.use('/promo-codes', promoCodeRoutes);
 router.use('/text-hider', textHiderRoutes);
 router.use('/segments', segmentRoutes);
+router.use('/broadcasts', broadcastRoutes);
 
 export default router;

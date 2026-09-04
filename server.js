@@ -22,6 +22,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { logError } from './controllers/healthController.js';
 import { deleteAnyFile } from './utils/deleteFile.js';
+import { startBroadcastScheduler } from './utils/broadcastEngine.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_ROOT = path.resolve(__dirname, 'uploads');
@@ -244,6 +245,7 @@ mongoose.connect(process.env.MONGO_URI)
     await migrateManualTags();
     await migrateCustomerVerifEmail();
     cleanOldReplacePhotos();
+    startBroadcastScheduler();
   })
   .catch(err => console.error('MongoDB connection error:', err));
 

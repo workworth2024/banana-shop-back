@@ -8,7 +8,7 @@ const notificationSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['order_delivered', 'order_status', 'order_replaced', 'order_refunded', 'balance_updated', 'preorder_status', 'preorder_refunded', 'preorder_paid', 'service_order_status', 'service_order_refunded', 'service_order_paid', 'promo_code', 'system'],
+    enum: ['order_delivered', 'order_status', 'order_replaced', 'order_refunded', 'balance_updated', 'preorder_status', 'preorder_refunded', 'preorder_paid', 'service_order_status', 'service_order_refunded', 'service_order_paid', 'promo_code', 'broadcast', 'system'],
     default: 'system'
   },
   title: {
@@ -21,6 +21,17 @@ const notificationSchema = new mongoose.Schema({
   },
   link: {
     type: String,
+    default: null
+  },
+  // Optional image attached to admin broadcasts — shown in the notification
+  // row and in the "new broadcast" popup.
+  imageUrl: {
+    type: String,
+    default: null
+  },
+  broadcastId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Broadcast',
     default: null
   },
   isRead: {
