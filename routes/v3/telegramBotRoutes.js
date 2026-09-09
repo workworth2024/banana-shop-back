@@ -9,17 +9,18 @@ import {
   getBotWallet,
   getBotWalletHistory
 } from '../../controllers/telegramBotController.js';
-import { createTopupInvoice, checkoutProduct, checkoutPreorder } from '../../controllers/cryptoCloudController.js';
+import { createTopupInvoice, checkoutProduct, checkoutPreorder, checkoutService } from '../../controllers/cryptoCloudController.js';
 import { purchaseProduct } from '../../controllers/digitalItemController.js';
 import { getMyOrders, getMyOrder, downloadMyItemFile } from '../../controllers/orderController.js';
 import { submitReplaceRequest } from '../../controllers/replaceController.js';
 import { getMyPreorders, downloadMyPreorderFile, createPreorder } from '../../controllers/preorderController.js';
 import { getMyWhitePages, getWhitePageDetail, downloadWhitePageFile } from '../../controllers/whitePageController.js';
-import { getMyServiceOrders, downloadResultFile } from '../../controllers/serviceOrderController.js';
+import { getMyServiceOrders, downloadResultFile, createServiceOrder } from '../../controllers/serviceOrderController.js';
 import { getMyReferralStats } from '../../controllers/referralController.js';
 import { getMyNotifications } from '../../controllers/notificationController.js';
 import { getMyPromoCodes, redeemPromoCodeHandler, cancelActivePromoCodeHandler } from '../../controllers/promoCodeController.js';
 import { verifyBotInternal, resolveBotCustomer } from '../../middlewares/botInternalMiddleware.js';
+import uploadServiceOrder from '../../middlewares/uploadServiceOrderMiddleware.js';
 
 const router = express.Router();
 
@@ -64,6 +65,10 @@ router.get('/white-pages/:uniqueId/download', resolveBotCustomer, downloadWhiteP
 
 router.get('/service-orders', resolveBotCustomer, getMyServiceOrders);
 router.get('/service-orders/:uid/download/:fileId', resolveBotCustomer, downloadResultFile);
+// uploadServiceOrder must run before resolveBotCustomer — it's multer that
+// parses the multipart body, and resolveBotCustomer needs req.body.telegramId.
+router.post('/service-orders', uploadServiceOrder.any(), resolveBotCustomer, createServiceOrder);
+router.post('/checkout/service', uploadServiceOrder.any(), resolveBotCustomer, checkoutService);
 
 router.get('/referral', resolveBotCustomer, getMyReferralStats);
 router.get('/notifications', resolveBotCustomer, getMyNotifications);
