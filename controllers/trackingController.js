@@ -9,11 +9,17 @@ import {
 
 const STOREFRONT_URL = (process.env.STOREFRONT_URL || 'https://banana-traff-shop.com').replace(/\/+$/, '');
 
+// `blid` (Banana Link ID) — deliberately NOT named utm_id/utm_* etc: ad
+// platforms (Meta, Google Ads...) commonly auto-append their own utm_id (a
+// numeric campaign/ad id) via "dynamic URL parameters", which would silently
+// overwrite our tracking code and make every hit look like an unknown link.
+// The reading side (captureTrackingFromUrl / fb-landing app.js) still also
+// accepts the old `utm_id` as a fallback for links generated before this.
 function buildLinkUrl(link) {
   let path = link.targetPath || '/';
   if (!path.startsWith('/')) path = '/' + path;
   const params = new URLSearchParams();
-  params.set('utm_id', link.code);
+  params.set('blid', link.code);
   const u = link.utm || {};
   if (u.source) params.set('utm_source', u.source);
   if (u.medium) params.set('utm_medium', u.medium);
