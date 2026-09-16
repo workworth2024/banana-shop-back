@@ -38,6 +38,9 @@ const trackingLinkSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   stats: {
     clicks: { type: Number, default: 0 },
+    // On-page CTA clicks (e.g. the Telegram button on FB/IG landing pages) —
+    // distinct from `clicks`, which is the landing-page visit itself.
+    buttonClicks: { type: Number, default: 0 },
     uniqueVisitors: { type: Number, default: 0 },
     registrations: { type: Number, default: 0 },
     purchases: { type: Number, default: 0 },

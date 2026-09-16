@@ -72,9 +72,11 @@ export function setTrackingCookies(res, { code, visitorId }) {
 }
 
 /**
- * Records a click for a smart link. Returns the visitorId used.
+ * Records a hit for a smart link — either the landing-page visit itself
+ * (type 'click', the default) or an on-page CTA click (type 'button_click',
+ * e.g. the Telegram button on FB/IG landing pages). Returns the visitorId used.
  */
-export async function recordClick({ req, link, visitorId, isNewVisitor }) {
+export async function recordClick({ req, link, visitorId, isNewVisitor, type = 'click', meta }) {
   const geo = geoFromReq(req);
   const device = parseDevice(req.headers['user-agent']);
   const referrer = String(req.headers['referer'] || req.body?.referrer || '').slice(0, 500);
@@ -82,15 +84,21 @@ export async function recordClick({ req, link, visitorId, isNewVisitor }) {
   await TrackingEvent.create({
     linkId: link._id,
     linkCode: link.code,
-    type: 'click',
+    type,
     visitorId,
     geo,
     device,
-    referrer
+    referrer,
+    meta: meta || {}
   });
 
-  const inc = { 'stats.clicks': 1 };
-  if (isNewVisitor) inc['stats.uniqueVisitors'] = 1;
+  const inc = {};
+  if (type === 'button_click') {
+    inc['stats.buttonClicks'] = 1;
+  } else {
+    inc['stats.clicks'] = 1;
+    if (isNewVisitor) inc['stats.uniqueVisitors'] = 1;
+  }
   await TrackingLink.updateOne({ _id: link._id }, { $inc: inc });
 
   return { geo, device };

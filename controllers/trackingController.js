@@ -69,11 +69,19 @@ function parseRange(req) {
 
 /* ============ PUBLIC ============ */
 
-// POST /api/v3/tracking/hit  { code, referrer }
+const HIT_TYPES = ['click', 'button_click'];
+
+// POST /api/v3/tracking/hit  { code, referrer, type? }
+// `type` defaults to 'click' (the landing-page visit). Pass 'button_click' for
+// an on-page CTA click (e.g. the Telegram button on FB/IG landing pages) —
+// restricted to these two so a client can't spoof 'order'/'registration'/etc.
 export const hit = async (req, res) => {
   try {
     const code = String(req.body?.code || '').trim();
     if (!code || code.length > 40) return res.status(200).json({ ok: false });
+
+    const rawType = String(req.body?.type || 'click').trim();
+    const type = HIT_TYPES.includes(rawType) ? rawType : 'click';
 
     const link = await TrackingLink.findOne({ code });
     if (!link || !link.isActive) {
@@ -81,7 +89,8 @@ export const hit = async (req, res) => {
     }
 
     const { visitorId, isNew } = ensureVisitorId(req);
-    await recordClick({ req, link, visitorId, isNewVisitor: isNew });
+    const meta = type === 'button_click' ? { cta: String(req.body?.cta || '').slice(0, 60) } : undefined;
+    await recordClick({ req, link, visitorId, isNewVisitor: isNew, type, meta });
     setTrackingCookies(res, { code, visitorId });
 
     return res.status(200).json({ ok: true });
@@ -105,6 +114,7 @@ async function perLinkStats(linkIds, range) {
         $group: {
           _id: '$linkId',
           clicks: { $sum: { $cond: [{ $eq: ['$type', 'click'] }, 1, 0] } },
+          buttonClicks: { $sum: { $cond: [{ $eq: ['$type', 'button_click'] }, 1, 0] } },
           registrations: { $sum: { $cond: [{ $eq: ['$type', 'registration'] }, 1, 0] } },
           purchases: { $sum: { $cond: [{ $in: ['$type', ['order', 'service', 'preorder']] }, 1, 0] } },
           revenue: { $sum: '$amount' }
@@ -123,6 +133,7 @@ async function perLinkStats(linkIds, range) {
   for (const r of typeAgg) {
     map.set(String(r._id), {
       clicks: r.clicks,
+      buttonClicks: r.buttonClicks,
       uniqueClicks: uniqMap.get(String(r._id)) || 0,
       registrations: r.registrations,
       purchases: r.purchases,
@@ -159,7 +170,7 @@ export const listLinks = async (req, res) => {
     const out = links.map((l) => {
       const base = serializeLink(l);
       const ps = statsMap.get(String(l._id)) || {
-        clicks: 0, uniqueClicks: 0, registrations: 0, purchases: 0, revenue: 0
+        clicks: 0, buttonClicks: 0, uniqueClicks: 0, registrations: 0, purchases: 0, revenue: 0
       };
       base.stats = { ...base.stats, ...ps };
       return base;
@@ -237,7 +248,7 @@ export const deleteLink = async (req, res) => {
 };
 
 function emptyTotals() {
-  return { clicks: 0, uniqueVisitors: 0, registrations: 0, orders: 0, services: 0, preorders: 0, purchases: 0, revenue: 0 };
+  return { clicks: 0, buttonClicks: 0, uniqueVisitors: 0, registrations: 0, orders: 0, services: 0, preorders: 0, purchases: 0, revenue: 0 };
 }
 
 async function computeTotals(matchBase) {
@@ -255,6 +266,7 @@ async function computeTotals(matchBase) {
   totals.uniqueVisitors = uniqueAgg[0]?.n || 0;
   for (const row of byType) {
     if (row._id === 'click') totals.clicks = row.count;
+    else if (row._id === 'button_click') totals.buttonClicks = row.count;
     else if (row._id === 'registration') totals.registrations = row.count;
     else if (row._id === 'order') { totals.orders = row.count; totals.revenue += row.revenue; totals.purchases += row.count; }
     else if (row._id === 'service') { totals.services = row.count; totals.revenue += row.revenue; totals.purchases += row.count; }
@@ -271,6 +283,7 @@ async function breakdown(matchBase, field) {
       $group: {
         _id: field,
         clicks: { $sum: { $cond: [{ $eq: ['$type', 'click'] }, 1, 0] } },
+        buttonClicks: { $sum: { $cond: [{ $eq: ['$type', 'button_click'] }, 1, 0] } },
         registrations: { $sum: { $cond: [{ $eq: ['$type', 'registration'] }, 1, 0] } },
         purchases: { $sum: { $cond: [{ $in: ['$type', ['order', 'service', 'preorder']] }, 1, 0] } },
         revenue: { $sum: '$amount' }
@@ -291,6 +304,7 @@ async function deviceBreakdown(matchBase) {
           os: { $ifNull: ['$device.os', ''] }
         },
         clicks: { $sum: { $cond: [{ $eq: ['$type', 'click'] }, 1, 0] } },
+        buttonClicks: { $sum: { $cond: [{ $eq: ['$type', 'button_click'] }, 1, 0] } },
         registrations: { $sum: { $cond: [{ $eq: ['$type', 'registration'] }, 1, 0] } },
         purchases: { $sum: { $cond: [{ $in: ['$type', ['order', 'service', 'preorder']] }, 1, 0] } },
         revenue: { $sum: '$amount' }
@@ -303,6 +317,7 @@ async function deviceBreakdown(matchBase) {
     device: r._id.type || 'unknown',
     os: r._id.os || '',
     clicks: r.clicks,
+    buttonClicks: r.buttonClicks,
     registrations: r.registrations,
     purchases: r.purchases,
     revenue: r.revenue
@@ -337,6 +352,7 @@ async function timeseries(matchBase) {
       $group: {
         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
         clicks: { $sum: { $cond: [{ $eq: ['$type', 'click'] }, 1, 0] } },
+        buttonClicks: { $sum: { $cond: [{ $eq: ['$type', 'button_click'] }, 1, 0] } },
         registrations: { $sum: { $cond: [{ $eq: ['$type', 'registration'] }, 1, 0] } },
         purchases: { $sum: { $cond: [{ $in: ['$type', ['order', 'service', 'preorder']] }, 1, 0] } },
         revenue: { $sum: '$amount' }
@@ -408,6 +424,7 @@ export const getDashboard = async (req, res) => {
             _id: '$linkId',
             linkCode: { $first: '$linkCode' },
             clicks: { $sum: { $cond: [{ $eq: ['$type', 'click'] }, 1, 0] } },
+            buttonClicks: { $sum: { $cond: [{ $eq: ['$type', 'button_click'] }, 1, 0] } },
             registrations: { $sum: { $cond: [{ $eq: ['$type', 'registration'] }, 1, 0] } },
             purchases: { $sum: { $cond: [{ $in: ['$type', ['order', 'service', 'preorder']] }, 1, 0] } },
             revenue: { $sum: '$amount' }
@@ -431,6 +448,7 @@ export const getDashboard = async (req, res) => {
         name: nameById.get(String(r._id)) || r.linkCode || '—',
         code: r.linkCode || '',
         clicks: r.clicks,
+        buttonClicks: r.buttonClicks,
         registrations: r.registrations,
         purchases: r.purchases,
         revenue: parseFloat((r.revenue || 0).toFixed(2))

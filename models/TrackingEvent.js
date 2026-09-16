@@ -11,7 +11,10 @@ const trackingEventSchema = new mongoose.Schema({
   linkCode: { type: String, index: true },
   type: {
     type: String,
-    enum: ['click', 'registration', 'order', 'service', 'preorder'],
+    // 'click' = landing-page visit (the smart-link hit). 'button_click' = an
+    // on-page CTA click (e.g. the Telegram button on FB/IG landing pages) —
+    // a separate, later funnel step on the same page.
+    enum: ['click', 'button_click', 'registration', 'order', 'service', 'preorder'],
     required: true,
     index: true
   },
