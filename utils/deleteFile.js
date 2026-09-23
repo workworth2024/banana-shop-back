@@ -38,13 +38,19 @@ export function deleteAnyFile(urlOrPath) {
   }
 }
 
-export function extractImageUrls(content = '') {
-  const localMatches = content.match(/\/uploads\/manuals\/[^\s"'<>)]+/g) || [];
+/** Pulls out image URLs embedded in a rich-text HTML body (e.g. inserted via
+ * ArticleEditor's image button) so they can be cleaned up when the article is
+ * edited or removed. `folder` is the storage folder the images were uploaded
+ * into (matches the remotePath used by the relevant upload*File() helper —
+ * 'manuals' for manuals, 'partners' for partners, etc). */
+export function extractImageUrls(content = '', folder = 'manuals') {
+  const escapedFolder = folder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const localMatches = content.match(new RegExp(`/uploads/${escapedFolder}/[^\\s"'<>)]+`, 'g')) || [];
   const cdnBase = (process.env.BUNNY_CDN_URL || '').replace(/\/$/, '');
   let cdnMatches = [];
   if (cdnBase) {
-    const escaped = cdnBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`${escaped}/manuals/[^\\s"'<>)]+`, 'g');
+    const escapedBase = cdnBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`${escapedBase}/${escapedFolder}/[^\\s"'<>)]+`, 'g');
     cdnMatches = content.match(re) || [];
   }
   return [...new Set([...localMatches, ...cdnMatches])];

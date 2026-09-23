@@ -33,6 +33,7 @@ import promoCodeRoutes from './promoCodeRoutes.js';
 import textHiderRoutes from './textHiderRoutes.js';
 import segmentRoutes from './segmentRoutes.js';
 import broadcastRoutes from './broadcastRoutes.js';
+import partnerRoutes from './partnerRoutes.js';
 
 const router = express.Router();
 
@@ -70,5 +71,6 @@ router.use('/promo-codes', promoCodeRoutes);
 router.use('/text-hider', textHiderRoutes);
 router.use('/segments', segmentRoutes);
 router.use('/broadcasts', broadcastRoutes);
+router.use('/partners', partnerRoutes);
 
 export default router;

@@ -8,6 +8,7 @@ import reviewRoutes from './reviewRoutes.js';
 import contactFormRoutes from './contactFormRoutes.js';
 import preorderRoutes from './preorderRoutes.js';
 import teamRoutes from './teamRoutes.js';
+import partnerRoutes from './partnerRoutes.js';
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use('/reviews', reviewRoutes);
 router.use('/contact-forms', contactFormRoutes);
 router.use('/preorders', preorderRoutes);
 router.use('/team', teamRoutes);
+router.use('/partners', partnerRoutes);
 
 export default router;
