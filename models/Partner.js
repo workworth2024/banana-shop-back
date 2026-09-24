@@ -49,6 +49,10 @@ const partnerSchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true
+  },
+  tag_ids: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PartnerTag' }],
+    default: []
   }
 }, { timestamps: true });
 

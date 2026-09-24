@@ -1,7 +1,25 @@
+import mongoose from 'mongoose';
 import Partner from '../models/Partner.js';
 import { bunnyUpload, generateFilename, getBunnyPublicUrl } from '../utils/bunnyStorage.js';
 import { deleteAnyFile, extractImageUrls } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
+
+const MAX_TAGS = 10;
+
+/** Принимает JSON-строку/массив/CSV из FormData, возвращает массив валидных ObjectId (или undefined, если поле не передано) */
+const parseTagIds = (raw) => {
+  if (raw === undefined) return undefined;
+  let list = raw;
+  if (typeof raw === 'string') {
+    const s = raw.trim();
+    if (!s) return [];
+    try { list = JSON.parse(s); } catch { list = s.split(','); }
+  }
+  if (!Array.isArray(list)) return [];
+  return [...new Set(list.map(v => String(v).trim()))]
+    .filter(v => mongoose.isValidObjectId(v))
+    .slice(0, MAX_TAGS);
+};
 
 const deletePartnerFile = (urlOrPath) => {
   if (!urlOrPath) return;
@@ -19,7 +37,7 @@ const uploadPartnerFile = async (file) => {
 
 export const getPartners = async (req, res) => {
   try {
-    const { page = 1, limit = 50, search = '' } = req.query;
+    const { page = 1, limit = 50, search = '', tag } = req.query;
     const safeSearch = escapeRegex(String(search).slice(0, 100));
     const query = {};
 
@@ -32,8 +50,11 @@ export const getPartners = async (req, res) => {
       ];
     }
 
+    if (tag) query.tag_ids = tag;
+
     const skip = (page - 1) * limit;
     const partners = await Partner.find(query)
+      .populate('tag_ids')
       .sort({ order: 1, createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -48,7 +69,7 @@ export const getPartners = async (req, res) => {
 
 export const getPartnerById = async (req, res) => {
   try {
-    const partner = await Partner.findById(req.params.id);
+    const partner = await Partner.findById(req.params.id).populate('tag_ids');
     if (!partner) return res.status(404).json({ message: 'Partner not found' });
     res.json(partner);
   } catch (error) {
@@ -63,10 +84,12 @@ export const createPartner = async (req, res) => {
     const content = { ru: req.body['content.ru'] || '', en: req.body['content.en'] || '' };
     const order = Number(req.body.order) || 0;
     const isActive = req.body.isActive !== 'false';
+    const tag_ids = parseTagIds(req.body.tag_ids) || [];
 
     const image = req.file ? await uploadPartnerFile(req.file) : '';
 
-    const partner = await Partner.create({ title, shortDesc, content, image, order, isActive });
+    const partner = await Partner.create({ title, shortDesc, content, image, order, isActive, tag_ids });
+    await partner.populate('tag_ids');
     res.status(201).json(partner);
   } catch (error) {
     console.error(error);
@@ -90,6 +113,8 @@ export const updatePartner = async (req, res) => {
     }
     if (req.body.order !== undefined) updateData.order = Number(req.body.order) || 0;
     if (req.body.isActive !== undefined) updateData.isActive = req.body.isActive !== 'false';
+    const tagIds = parseTagIds(req.body.tag_ids);
+    if (tagIds !== undefined) updateData.tag_ids = tagIds;
 
     const removeImage = req.body.removeImage === 'true' && !req.file;
     const needsOld = req.file || removeImage || updateData.content;
@@ -117,7 +142,7 @@ export const updatePartner = async (req, res) => {
       }
     }
 
-    const partner = await Partner.findByIdAndUpdate(id, updateData, { returnDocument: 'after' });
+    const partner = await Partner.findByIdAndUpdate(id, updateData, { returnDocument: 'after' }).populate('tag_ids');
     if (!partner) return res.status(404).json({ message: 'Partner not found' });
     res.json(partner);
   } catch (error) {
@@ -157,7 +182,11 @@ export const uploadPartnerImage = async (req, res) => {
 
 export const getPublicPartners = async (req, res) => {
   try {
-    const partners = await Partner.find({ isActive: true })
+    const { tag } = req.query;
+    const query = { isActive: true };
+    if (tag) query.tag_ids = tag;
+
+    const partners = await Partner.find(query)
       .select('title shortDesc image order createdAt')
       .sort({ order: 1, createdAt: -1 });
     res.json({ partners });

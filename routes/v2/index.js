@@ -9,6 +9,7 @@ import contactFormRoutes from './contactFormRoutes.js';
 import preorderRoutes from './preorderRoutes.js';
 import teamRoutes from './teamRoutes.js';
 import partnerRoutes from './partnerRoutes.js';
+import partnerTagRoutes from './partnerTagRoutes.js';
 
 const router = express.Router();
 
@@ -26,5 +27,6 @@ router.use('/contact-forms', contactFormRoutes);
 router.use('/preorders', preorderRoutes);
 router.use('/team', teamRoutes);
 router.use('/partners', partnerRoutes);
+router.use('/partner-tags', partnerTagRoutes);
 
 export default router;

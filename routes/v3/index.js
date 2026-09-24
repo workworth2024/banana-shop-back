@@ -34,6 +34,7 @@ import textHiderRoutes from './textHiderRoutes.js';
 import segmentRoutes from './segmentRoutes.js';
 import broadcastRoutes from './broadcastRoutes.js';
 import partnerRoutes from './partnerRoutes.js';
+import partnerTagRoutes from './partnerTagRoutes.js';
 
 const router = express.Router();
 
@@ -72,5 +73,6 @@ router.use('/text-hider', textHiderRoutes);
 router.use('/segments', segmentRoutes);
 router.use('/broadcasts', broadcastRoutes);
 router.use('/partners', partnerRoutes);
+router.use('/partner-tags', partnerTagRoutes);
 
 export default router;
