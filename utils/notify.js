@@ -18,8 +18,14 @@ const STOREFRONT_URL = (process.env.STOREFRONT_URL || 'https://banana-traff-shop
  * `buttonText` is optional (same convention as broadcasts) — when given
  * alongside `link`, it shows as a CTA button both on the website notification
  * and as a Telegram inline button.
+ *
+ * `telegramButtonUrl` is optional — when the right destination for the
+ * Telegram button isn't the same as the website `link` (e.g. a bot deep
+ * link that opens the product/order flow inside Telegram itself instead of
+ * bouncing out to the site), pass it here and it takes over just for the
+ * Telegram push; the website notification still uses `link` either way.
  */
-export async function notifyCustomer({ customerId, customer, type, title, message, link, buttonText }) {
+export async function notifyCustomer({ customerId, customer, type, title, message, link, buttonText, telegramButtonUrl }) {
   const notif = await Notification.create({ userId: customerId, type, title, message, link, buttonText: buttonText || null });
 
   io.of('/customer').to(`customer:${customerId}`).emit('notification', {
@@ -37,7 +43,7 @@ export async function notifyCustomer({ customerId, customer, type, title, messag
     if (cust?.telegramId) {
       const lang = cust.language === 'en' ? 'en' : 'ru';
       const text = `🔔 <b>${title[lang] || title.ru}</b>\n\n${message[lang] || message.ru}`;
-      const buttonUrl = link ? (/^https?:\/\//i.test(link) ? link : `${STOREFRONT_URL}${link}`) : null;
+      const buttonUrl = telegramButtonUrl || (link ? (/^https?:\/\//i.test(link) ? link : `${STOREFRONT_URL}${link}`) : null);
       notifyTelegram(cust.telegramId, text, (buttonText && buttonUrl) ? { buttonText, buttonUrl } : undefined).catch(() => {});
     }
   } catch (e) {

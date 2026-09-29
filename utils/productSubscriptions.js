@@ -8,10 +8,25 @@ export const PRODUCT_DETAIL_SLUG = {
   YoutubeProduct: 'youtube'
 };
 
+// "?start=gaprod_<id>" / "?start=ytprod_<id>" — matches the deep-link the bot
+// (botInstance.js) parses to jump straight to that product's detail/order
+// screen, so Telegram users order inside the bot instead of on the website.
+const PRODUCT_DEEPLINK_PREFIX = {
+  GoogleAdsProduct: 'gaprod',
+  YoutubeProduct: 'ytprod'
+};
+
 export function buildProductLink(productId, productType) {
   const slug = PRODUCT_DETAIL_SLUG[productType];
   if (!slug) return null;
   return `/services/${slug}/product/${productId}`;
+}
+
+export function buildBotProductDeepLink(productId, productType) {
+  const prefix = PRODUCT_DEEPLINK_PREFIX[productType];
+  const botUsername = process.env.TELEGRAM_BOT_USERNAME;
+  if (!prefix || !botUsername) return null;
+  return `https://t.me/${botUsername}?start=${prefix}_${productId}`;
 }
 
 /**
@@ -25,6 +40,7 @@ export async function notifyProductSubscribers({ productId, productType, product
   if (!subs.length) return;
 
   const link = buildProductLink(productId, productType);
+  const telegramButtonUrl = buildBotProductDeepLink(productId, productType);
   const titleRu = productTitle?.ru || productTitle?.en || '';
   const titleEn = productTitle?.en || productTitle?.ru || '';
 
@@ -47,7 +63,8 @@ export async function notifyProductSubscribers({ productId, productType, product
         en: `“${titleEn}” is back in stock. Grab it before it's gone!`
       },
       link,
-      buttonText: lang === 'ru' ? 'Перейти к товару' : 'View product'
+      buttonText: lang === 'ru' ? 'Перейти к товару' : 'View product',
+      telegramButtonUrl
     }).catch((e) => console.error('[ProductSubscriptions] notifyCustomer failed:', e.message));
   }
 }
