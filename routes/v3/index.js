@@ -35,6 +35,8 @@ import segmentRoutes from './segmentRoutes.js';
 import broadcastRoutes from './broadcastRoutes.js';
 import partnerRoutes from './partnerRoutes.js';
 import partnerTagRoutes from './partnerTagRoutes.js';
+import productSubscriptionRoutes from './productSubscriptionRoutes.js';
+import customerProductSubscriptionRoutes from './customerProductSubscriptionRoutes.js';
 
 const router = express.Router();
 
@@ -74,5 +76,7 @@ router.use('/segments', segmentRoutes);
 router.use('/broadcasts', broadcastRoutes);
 router.use('/partners', partnerRoutes);
 router.use('/partner-tags', partnerTagRoutes);
+router.use('/product-subscriptions', productSubscriptionRoutes);
+router.use('/customer/product-subscriptions', customerProductSubscriptionRoutes);
 
 export default router;

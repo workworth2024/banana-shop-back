@@ -2,6 +2,7 @@ import DigitalItem from '../models/DigitalItem.js';
 import GoogleAdsProduct from '../models/GoogleAdsProduct.js';
 import YoutubeProduct from '../models/YoutubeProduct.js';
 import { io } from '../server.js';
+import { notifyProductSubscribers } from './productSubscriptions.js';
 
 const getProductModel = (productType) => {
   if (productType === 'GoogleAdsProduct') return GoogleAdsProduct;
@@ -12,8 +13,9 @@ const getProductModel = (productType) => {
 export const syncProductCounts = async (productId, productType) => {
   const ProductModel = getProductModel(productType);
   if (!ProductModel) return { total: 0, geos: [] };
-  const product = await ProductModel.findById(productId).select('geos');
+  const product = await ProductModel.findById(productId).select('geos counts title');
   if (!product) return { total: 0, geos: [] };
+  const previousTotal = Number(product.counts) || 0;
   const geoCodes = Array.isArray(product.geos) ? product.geos.map(g => g.code) : [];
   const updatedGeos = [];
   for (const code of geoCodes) {
@@ -30,6 +32,14 @@ export const syncProductCounts = async (productId, productType) => {
       counts: total
     });
   } catch (_) {}
+
+  // Restocked / availability went up — ping anyone subscribed to this product.
+  if (total > previousTotal) {
+    notifyProductSubscribers({ productId, productType, productTitle: product.title }).catch((e) => {
+      console.error('[ProductSubscriptions] notify error:', e.message);
+    });
+  }
+
   return { total, geos: updatedGeos };
 };
 

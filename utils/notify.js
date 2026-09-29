@@ -3,6 +3,8 @@ import CustomerUser from '../models/CustomerUser.js';
 import { io } from '../server.js';
 import { notifyTelegram } from './telegramNotify.js';
 
+const STOREFRONT_URL = (process.env.STOREFRONT_URL || 'https://banana-traff-shop.com').replace(/\/+$/, '');
+
 /**
  * Single entry point for "tell the customer something happened" — creates the
  * Notification doc + emits the website socket event (as before), and — if the
@@ -12,9 +14,13 @@ import { notifyTelegram } from './telegramNotify.js';
  *
  * `customer` is optional — pass an already-loaded doc/lean object with
  * telegramId/language to skip an extra query; otherwise it's fetched here.
+ *
+ * `buttonText` is optional (same convention as broadcasts) — when given
+ * alongside `link`, it shows as a CTA button both on the website notification
+ * and as a Telegram inline button.
  */
-export async function notifyCustomer({ customerId, customer, type, title, message, link }) {
-  const notif = await Notification.create({ userId: customerId, type, title, message, link });
+export async function notifyCustomer({ customerId, customer, type, title, message, link, buttonText }) {
+  const notif = await Notification.create({ userId: customerId, type, title, message, link, buttonText: buttonText || null });
 
   io.of('/customer').to(`customer:${customerId}`).emit('notification', {
     id: notif._id,
@@ -22,6 +28,7 @@ export async function notifyCustomer({ customerId, customer, type, title, messag
     title: notif.title,
     message: notif.message,
     link: notif.link,
+    buttonText: notif.buttonText,
     createdAt: notif.createdAt
   });
 
@@ -30,7 +37,8 @@ export async function notifyCustomer({ customerId, customer, type, title, messag
     if (cust?.telegramId) {
       const lang = cust.language === 'en' ? 'en' : 'ru';
       const text = `🔔 <b>${title[lang] || title.ru}</b>\n\n${message[lang] || message.ru}`;
-      notifyTelegram(cust.telegramId, text).catch(() => {});
+      const buttonUrl = link ? (/^https?:\/\//i.test(link) ? link : `${STOREFRONT_URL}${link}`) : null;
+      notifyTelegram(cust.telegramId, text, (buttonText && buttonUrl) ? { buttonText, buttonUrl } : undefined).catch(() => {});
     }
   } catch (e) {
     console.error('[Notify] telegram push lookup failed:', e.message);
