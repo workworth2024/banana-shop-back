@@ -443,7 +443,8 @@ export const createGoogleAdsProduct = async (req, res) => {
     const product = await GoogleAdsProduct.create(productData);
     res.status(201).json(product);
   } catch (error) {
-    res.status(500).json({ message: 'Error creating Google Ads product' });
+    console.error('[Products] createGoogleAdsProduct error:', error);
+    res.status(500).json({ message: error.message || 'Error creating Google Ads product' });
   }
 };
 
