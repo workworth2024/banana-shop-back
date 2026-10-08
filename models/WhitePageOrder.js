@@ -13,8 +13,9 @@ const whitePageOrderSchema = new mongoose.Schema({
     unique: true
   },
   type: {
+    // Not a fixed enum: the external platform's /types catalogue can grow
+    // (landing-page, blog, shop, news, casino, ...) without a redeploy here.
     type: String,
-    enum: ['landing-page', 'blog'],
     default: 'landing-page'
   },
   frame: { type: String, default: 'html' },
@@ -28,10 +29,12 @@ const whitePageOrderSchema = new mongoose.Schema({
   email: { type: String, default: '' },
   address: { type: String, default: '' },
   financeLicense: { type: String, default: '' },
+  financeLicenseUrl: { type: String, default: '' },
   fbPixel: { type: String, default: '' },
   googleAdsTag: { type: String, default: '' },
-  stopwords: { type: String, default: '' },
-  keywords: { type: String, default: '' },
+  googleSiteVerification: { type: String, default: '' },
+  stopwords: { type: [String], default: [] },
+  keywords: { type: [String], default: [] },
   note: { type: String, default: '' },
   archiveLabel: { type: String, default: '' },
   price: { type: Number, default: 0 },

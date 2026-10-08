@@ -6,12 +6,14 @@ function getApiKey() {
 }
 
 export class WpApiError extends Error {
-  constructor(message, { status, code, errors } = {}) {
+  constructor(message, { status, code, errors, retryAfter, retryAt } = {}) {
     super(message);
     this.name = 'WpApiError';
     this.status = status || 500;
     this.code = code || 'WP_API_ERROR';
     this.errors = errors || null;
+    this.retryAfter = retryAfter ?? null;
+    this.retryAt = retryAt ?? null;
   }
 }
 
@@ -68,10 +70,13 @@ export async function wpRequest(method, path, { externalUserId, body, query, ide
   }
 
   if (!res.ok || data?.success === false) {
+    const retryAfterHeader = res.headers.get('retry-after');
     throw new WpApiError(data?.message || `WP API error (${res.status})`, {
       status: res.status,
       code: data?.code || 'WP_API_ERROR',
-      errors: data?.errors || null
+      errors: data?.errors || null,
+      retryAfter: data?.retryAfter ?? (retryAfterHeader ? Number(retryAfterHeader) : null),
+      retryAt: data?.retryAt ?? null
     });
   }
 

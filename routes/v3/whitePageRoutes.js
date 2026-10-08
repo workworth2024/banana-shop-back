@@ -1,13 +1,15 @@
 import express from 'express';
 import {
-  getPrice, createWhitePage, getMyWhitePages, getWhitePageDetail,
-  mintWhitePageDownload, regenerateWhitePage, retryWhitePage
+  getWhitePageTypes, getPrice, createWhitePage, getMyWhitePages, getWhitePageDetail,
+  mintWhitePageDownload, regenerateWhitePage, retryWhitePage, getWpBalance
 } from '../../controllers/whitePageController.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
 
 const router = express.Router();
 
+router.get('/types', verifyCustomer, getWhitePageTypes);
 router.get('/price', verifyCustomer, getPrice);
+router.get('/balance', verifyCustomer, getWpBalance);
 router.post('/', verifyCustomer, createWhitePage);
 router.get('/my', verifyCustomer, getMyWhitePages);
 router.get('/my/:uniqueId', verifyCustomer, getWhitePageDetail);

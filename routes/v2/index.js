@@ -10,6 +10,7 @@ import preorderRoutes from './preorderRoutes.js';
 import teamRoutes from './teamRoutes.js';
 import partnerRoutes from './partnerRoutes.js';
 import partnerTagRoutes from './partnerTagRoutes.js';
+import whitePageRoutes from './whitePageRoutes.js';
 
 const router = express.Router();
 
@@ -28,5 +29,6 @@ router.use('/preorders', preorderRoutes);
 router.use('/team', teamRoutes);
 router.use('/partners', partnerRoutes);
 router.use('/partner-tags', partnerTagRoutes);
+router.use('/white-pages', whitePageRoutes);
 
 export default router;

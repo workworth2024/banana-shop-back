@@ -6,11 +6,32 @@ import { wpGet, wpPost, wpDownloadOrigin, WpApiError } from '../utils/wpApiClien
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 
-const ALLOWED_TYPES = ['landing-page', 'blog'];
+// Short-lived in-process cache for GET /types — it's effectively static
+// (catalogue of site types/themes/prices) and gets hit on every price lookup
+// and every generate, so there's no need to round-trip the external API
+// every single time.
+let typesCache = null;
+let typesCacheAt = 0;
+const TYPES_CACHE_TTL_MS = 60 * 1000;
+
+async function fetchTypesCatalog(externalUserId) {
+  const now = Date.now();
+  if (typesCache && now - typesCacheAt < TYPES_CACHE_TTL_MS) return typesCache;
+  const data = await wpGet('/types', { externalUserId });
+  typesCache = data;
+  typesCacheAt = now;
+  return data;
+}
 
 function sendWpError(res, err, fallbackMessage) {
   if (err instanceof WpApiError) {
-    return res.status(err.status).json({ message: err.message || fallbackMessage, code: err.code, errors: err.errors });
+    return res.status(err.status).json({
+      message: err.message || fallbackMessage,
+      code: err.code,
+      errors: err.errors,
+      retryAfter: err.retryAfter,
+      retryAt: err.retryAt
+    });
   }
   console.error('[WhitePages]', err);
   return res.status(500).json({ message: fallbackMessage || 'Server error' });
@@ -23,12 +44,26 @@ function sanitizeStr(v, max) {
   return s.slice(0, max);
 }
 
-function buildGeneratePayload(body) {
-  const payload = {
-    type: ALLOWED_TYPES.includes(body.type) ? body.type : 'landing-page',
-    frame: 'html'
-  };
-  const theme = sanitizeStr(body.theme, 40);
+function sanitizeArray(v, { maxItems, maxLen } = {}) {
+  let arr;
+  if (Array.isArray(v)) arr = v;
+  else if (typeof v === 'string') arr = v.split(/[,\n]/);
+  else return [];
+  arr = arr.map(s => String(s).trim().slice(0, maxLen || 100)).filter(Boolean);
+  if (maxItems) arr = arr.slice(0, maxItems);
+  return arr;
+}
+
+/**
+ * Builds the /generate request body and validates it against the type's own
+ * requiredFields/forcedTheme/frame as reported by GET /types, instead of a
+ * hardcoded list — so new site types the platform adds (shop/news/casino/...)
+ * work here without a code change.
+ */
+function buildGeneratePayload(body, typeDef) {
+  const payload = { type: typeDef.type, frame: typeDef.frame || 'html' };
+
+  const theme = typeDef.forcedTheme || sanitizeStr(body.theme, 40);
   if (theme) payload.theme = theme;
   const prompt = sanitizeStr(body.prompt, 2000);
   if (prompt) payload.prompt = prompt;
@@ -40,6 +75,8 @@ function buildGeneratePayload(body) {
   if (companyName) payload.companyName = companyName;
   const domainName = sanitizeStr(body.domainName, 253);
   if (domainName) payload.domainName = domainName;
+  const embedToken = sanitizeStr(body.embedToken, 500);
+  if (embedToken) payload.embedToken = embedToken;
   const phone = sanitizeStr(body.phone, 30);
   if (phone) payload.phone = phone;
   const email = sanitizeStr(body.email, 254);
@@ -50,12 +87,16 @@ function buildGeneratePayload(body) {
   if (fbPixel) payload.fbPixel = fbPixel.replace(/\D/g, '');
   const googleAdsTag = sanitizeStr(body.googleAdsTag, 50);
   if (googleAdsTag) payload.googleAdsTag = googleAdsTag;
+  const googleSiteVerification = sanitizeStr(body.googleSiteVerification, 200);
+  if (googleSiteVerification) payload.googleSiteVerification = googleSiteVerification;
   const financeLicense = sanitizeStr(body.financeLicense, 100);
   if (financeLicense) payload.financeLicense = financeLicense;
-  const stopwords = sanitizeStr(body.stopwords, 4000);
-  if (stopwords) payload.stopwords = stopwords;
-  const keywords = sanitizeStr(body.keywords, 800);
-  if (keywords) payload.keywords = keywords;
+  const financeLicenseUrl = sanitizeStr(body.financeLicenseUrl, 500);
+  if (financeLicenseUrl) payload.financeLicenseUrl = financeLicenseUrl;
+  const stopwords = sanitizeArray(body.stopwords, { maxLen: 100 });
+  if (stopwords.length) payload.stopwords = stopwords;
+  const keywords = sanitizeArray(body.keywords, { maxItems: 10, maxLen: 100 });
+  if (keywords.length) payload.keywords = keywords;
   const note = sanitizeStr(body.note, 50);
   if (note) payload.note = note;
   const archiveLabel = sanitizeStr(body.archiveLabel, 80);
@@ -63,16 +104,55 @@ function buildGeneratePayload(body) {
   return payload;
 }
 
+/** Returns a 422-style { field, message } list for any requiredFields missing from payload. */
+function validateRequiredFields(payload, typeDef) {
+  const errors = [];
+  for (const field of typeDef.requiredFields || []) {
+    if (field === 'theme' && typeDef.forcedTheme) continue; // auto-filled
+    const value = payload[field];
+    const empty = value === undefined || value === null || value === '' ||
+      (Array.isArray(value) && value.length === 0);
+    if (empty) errors.push({ field, message: `${field} is required` });
+  }
+  if (payload.prompt && (payload.prompt.length < 30 || payload.prompt.length > 2000)) {
+    errors.push({ field: 'prompt', message: 'Prompt must be 30-2000 characters' });
+  }
+  if (payload.geo && !/^[A-Z]{2,5}$/.test(payload.geo)) {
+    errors.push({ field: 'geo', message: 'Geo must be 2-5 letters' });
+  }
+  return errors;
+}
+
+export const getWhitePageTypes = async (req, res) => {
+  try {
+    const customer = req.customer;
+    const data = await fetchTypesCatalog(customer.uid);
+    return res.json(data);
+  } catch (err) {
+    return sendWpError(res, err, 'Failed to fetch site types');
+  }
+};
+
+// Public (unauthenticated) catalogue — lets guests browsing /services/white-pages
+// see the available site types and prices before logging in. The external API
+// needs *some* externalUserId on every call, so a fixed placeholder is used;
+// the response itself isn't customer-specific, and is cached in-process.
+export const getWhitePageTypesPublic = async (req, res) => {
+  try {
+    const data = await fetchTypesCatalog('storefront-public-catalog');
+    return res.json(data);
+  } catch (err) {
+    return sendWpError(res, err, 'Failed to fetch site types');
+  }
+};
+
 export const getPrice = async (req, res) => {
   try {
     const customer = req.customer;
-    const type = ALLOWED_TYPES.includes(req.query.type) ? req.query.type : 'landing-page';
-    const frame = req.query.frame || 'html';
-    const data = await wpGet('/price', {
-      externalUserId: customer.uid,
-      query: { framework: frame, type }
-    });
-    return res.json({ price: data.price, framework: data.framework, type: data.type });
+    const catalog = await fetchTypesCatalog(customer.uid);
+    const typeDef = catalog.types.find(t => t.type === req.query.type);
+    if (!typeDef) return res.status(404).json({ message: 'Unknown page type', code: 'GENERATOR_TYPE_UNAVAILABLE' });
+    return res.json({ price: typeDef.price, framework: typeDef.frame, type: typeDef.type });
   } catch (err) {
     return sendWpError(res, err, 'Failed to fetch price');
   }
@@ -81,25 +161,35 @@ export const getPrice = async (req, res) => {
 export const createWhitePage = async (req, res) => {
   const customer = req.customer;
   try {
-    const payload = buildGeneratePayload(req.body || {});
-    if (!ALLOWED_TYPES.includes(payload.type)) {
-      return res.status(400).json({ message: 'Invalid page type' });
-    }
-
     const preCustomer = await CustomerUser.findById(customer._id).select('balance uid');
     if (!preCustomer) return res.status(404).json({ message: 'User not found' });
 
-    let priceData;
+    let catalog;
     try {
-      priceData = await wpGet('/price', {
-        externalUserId: preCustomer.uid,
-        query: { framework: payload.frame, type: payload.type }
-      });
+      catalog = await fetchTypesCatalog(preCustomer.uid);
     } catch (err) {
-      return sendWpError(res, err, 'Failed to fetch price');
+      return sendWpError(res, err, 'Failed to fetch site types');
     }
 
-    const chargeAmount = parseFloat(Number(priceData.price) || 0);
+    const typeDef = catalog.types.find(t => t.type === req.body?.type);
+    if (!typeDef) {
+      return res.status(422).json({
+        message: 'Invalid page type',
+        code: 'VALIDATION_FAILED',
+        errors: [{ field: 'type', message: 'Unknown or unsupported page type' }]
+      });
+    }
+    if (!typeDef.orderable) {
+      return res.status(403).json({ message: `${typeDef.label || typeDef.type} is not orderable right now`, code: 'GENERATOR_TYPE_UNAVAILABLE' });
+    }
+
+    const payload = buildGeneratePayload(req.body || {}, typeDef);
+    const validationErrors = validateRequiredFields(payload, typeDef);
+    if (validationErrors.length) {
+      return res.status(422).json({ message: 'Validation failed', code: 'VALIDATION_FAILED', errors: validationErrors });
+    }
+
+    const chargeAmount = parseFloat(Number(typeDef.price) || 0);
     if (chargeAmount <= 0) {
       return res.status(400).json({ message: 'Price is not configured' });
     }
@@ -156,10 +246,12 @@ export const createWhitePage = async (req, res) => {
         email: payload.email || '',
         address: payload.address || '',
         financeLicense: payload.financeLicense || '',
+        financeLicenseUrl: payload.financeLicenseUrl || '',
         fbPixel: payload.fbPixel || '',
         googleAdsTag: payload.googleAdsTag || '',
-        stopwords: payload.stopwords || '',
-        keywords: payload.keywords || '',
+        googleSiteVerification: payload.googleSiteVerification || '',
+        stopwords: payload.stopwords || [],
+        keywords: payload.keywords || [],
         note: payload.note || '',
         archiveLabel: payload.archiveLabel || '',
         price: chargeAmount,
@@ -358,5 +450,16 @@ export const retryWhitePage = async (req, res) => {
     return res.json({ order, task: task || null });
   } catch (err) {
     return sendWpError(res, err, 'Failed to retry');
+  }
+};
+
+/** Mirrored balance on the White Pages platform — for support/debugging, should always equal our local balance after a successful /balance/sync. */
+export const getWpBalance = async (req, res) => {
+  try {
+    const customer = req.customer;
+    const data = await wpGet('/balance', { externalUserId: customer.uid });
+    return res.json(data);
+  } catch (err) {
+    return sendWpError(res, err, 'Failed to fetch balance');
   }
 };
