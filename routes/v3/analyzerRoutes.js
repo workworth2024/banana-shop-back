@@ -4,7 +4,8 @@ import {
   getAnalyzerLimits,
   runAnalyzerScan,
   getMyAnalyses,
-  getMyAnalysis
+  getMyAnalysis,
+  checkAnalyzerUrl
 } from '../../controllers/analyzerController.js';
 import { verifyCustomer } from '../../middlewares/customerAuthMiddleware.js';
 
@@ -19,6 +20,9 @@ const scanLimiter = rateLimit({
   legacyHeaders: false
 });
 
+const checkLimiter = rateLimit({ windowMs: 60 * 1000, max: 40, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many requests.' } });
+
+router.get('/check-url', checkLimiter, checkAnalyzerUrl);
 router.get('/limits', verifyCustomer, getAnalyzerLimits);
 router.post('/scan', verifyCustomer, scanLimiter, runAnalyzerScan);
 router.get('/history', verifyCustomer, getMyAnalyses);

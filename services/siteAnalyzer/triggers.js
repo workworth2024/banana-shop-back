@@ -200,9 +200,18 @@ export const GEO_RISK = {
  * Falls back to a generic tier-3 entry (using the real country name) for
  * codes without curated regulator data, instead of silently defaulting to US.
  */
-export function getGeoRisk(code) {
+// Regulator notes are curated in Russian only; English reports get a tier-based summary.
+const TIER_EXPLAIN_EN = {
+  1: 'Tier 1 market: the strictest ad moderation and active regulators (health, finance and gambling claims are checked closely).',
+  2: 'Tier 2 market: standard moderation; regulated verticals still need local licences and Google certification.',
+  3: 'Tier 3 market: lighter regulator activity, but Google policies apply in full.'
+};
+
+export function getGeoRisk(code, lang = 'ru') {
   const upper = String(code || '').toUpperCase();
-  if (GEO_RISK[upper]) return GEO_RISK[upper];
+  const en = lang === 'en';
+  const curated = GEO_RISK[upper];
+  if (curated) return en ? { ...curated, explain: TIER_EXPLAIN_EN[curated.tier] || TIER_EXPLAIN_EN[3] } : curated;
 
   const country = COUNTRIES_BY_CODE[upper];
   if (country) {
@@ -210,11 +219,13 @@ export function getGeoRisk(code) {
       risk: 10,
       tier: 3,
       name: country.name,
-      explain: `Детальные данные по регулятору для ${country.name} пока не собраны — используется базовая оценка. Проверьте местные требования к рекламе вручную.`
+      explain: en
+        ? `No curated regulator data for ${country.name} yet — a baseline estimate is used. Check local advertising rules manually.`
+        : `Детальные данные по регулятору для ${country.name} пока не собраны — используется базовая оценка. Проверьте местные требования к рекламе вручную.`
     };
   }
 
-  return GEO_RISK.US;
+  return en ? { ...GEO_RISK.US, explain: TIER_EXPLAIN_EN[1] } : GEO_RISK.US;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

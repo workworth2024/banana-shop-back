@@ -4,7 +4,9 @@
  * Docs: https://developers.google.com/speed/docs/insights/v5/get-started
  */
 const PSI_ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed';
-const PSI_TIMEOUT_MS = 20000;
+// Lighthouse runs on Google's side often take 20-40s; at 20s ~20% of scans got no speed data.
+// Safe now that PageSpeed runs in parallel with the other lookups (nginx allows 180s).
+const PSI_TIMEOUT_MS = 50000;
 
 function emptySpeed(reason) {
   return {
@@ -35,7 +37,10 @@ async function runOnce(url, strategy, apiKey) {
       score: perfScore != null ? Math.round(perfScore * 100) : null,
       loadTimeSec: audits?.['speed-index']?.numericValue ? +(audits['speed-index'].numericValue / 1000).toFixed(2) : null,
       lcp: metrics?.LARGEST_CONTENTFUL_PAINT_MS?.percentile ?? audits?.['largest-contentful-paint']?.numericValue ?? null,
-      cls: metrics?.CUMULATIVE_LAYOUT_SHIFT_SCORE?.percentile ?? audits?.['cumulative-layout-shift']?.numericValue ?? null,
+      // CrUX reports CLS ×100 (5 = 0.05); Lighthouse reports the raw value
+      cls: metrics?.CUMULATIVE_LAYOUT_SHIFT_SCORE?.percentile != null
+        ? metrics.CUMULATIVE_LAYOUT_SHIFT_SCORE.percentile / 100
+        : audits?.['cumulative-layout-shift']?.numericValue ?? null,
       fcp: audits?.['first-contentful-paint']?.numericValue ?? null,
       tbt: audits?.['total-blocking-time']?.numericValue ?? null,
       opportunities: Object.values(audits)

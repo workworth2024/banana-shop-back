@@ -25,3 +25,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Site analyzer runtime cache (Tranco list)
+services/siteAnalyzer/.cache/

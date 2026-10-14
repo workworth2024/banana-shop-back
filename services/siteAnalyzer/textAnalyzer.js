@@ -55,7 +55,53 @@ export function analyzeText(text, headline, description, keywords) {
   return { totalScore, maxPossible, categories, issues };
 }
 
-export function getTriggerExplanation(catKey, match) {
+/**
+ * Re-scores trigger results without the matches the contextual AI review marked as false
+ * positives ("time slot" ≠ gambling), so the risk score reflects confirmed risks only.
+ * The flagged issues stay in the list (with falsePositive: true) for transparency.
+ */
+export function excludeFalsePositives(textResults, falseTexts) {
+  if (!falseTexts.size) return textResults;
+  const isFalse = (m) => falseTexts.has(String(m).toLowerCase());
+  let totalScore = 0;
+  const categories = textResults.categories.map((cat) => {
+    const matches = cat.matches.filter((m) => !isFalse(m));
+    const rawScore = matches.length * cat.weight;
+    const maxCatScore = (TRIGGERS[cat.key]?.patterns.length || 1) * cat.weight;
+    const score = Math.min(100, Math.round((rawScore / Math.min(maxCatScore, 50)) * 100));
+    totalScore += score;
+    return { ...cat, matches, rawScore, score };
+  });
+  const issues = textResults.issues.map((i) => (isFalse(i.text) ? { ...i, falsePositive: true } : i));
+  return { ...textResults, totalScore, categories, issues };
+}
+
+const CATEGORY_NAMES_EN = {
+  circumventing: 'Circumventing systems', gambling: 'Gambling / casino', nutra: 'Nutra / health',
+  sexual: 'Adult / dating', misrepresentation: 'Misleading claims', financial: 'Financial risks'
+};
+
+export function localizeTextResults(textResults, lang) {
+  if (lang !== 'en') return textResults;
+  return {
+    ...textResults,
+    categories: textResults.categories.map(c => ({ ...c, name: CATEGORY_NAMES_EN[c.key] || c.name })),
+    issues: textResults.issues.map(i => ({ ...i, category: CATEGORY_NAMES_EN[i.key] || i.category, explain: getTriggerExplanation(i.key, i.text, 'en') }))
+  };
+}
+
+export function getTriggerExplanation(catKey, match, lang = 'ru') {
+  if (lang === 'en') {
+    const en = {
+      circumventing: `"${match}" points to an attempt to bypass Google Ads policies (cloaking, account farming) — an egregious violation.`,
+      gambling: `"${match}" belongs to gambling. Gambling ads need Google certification, a regulator licence and disclaimers.`,
+      nutra: `"${match}" is a typical health claim. Medical claims, "miracle" and guaranteed results are automatic triggers.`,
+      sexual: `"${match}" is adult content. Sexually explicit content is not allowed in Google Ads in most GEOs.`,
+      misrepresentation: `"${match}" is a misleading claim: any guarantee needs proof.`,
+      financial: `"${match}" relates to financial risk. CFD, binary options and HYIP are banned or tightly regulated in Tier 1.`
+    };
+    return en[catKey] || `"${match}" was found in the ${catKey} category. Consider removing or rewording it.`;
+  }
   const explanations = {
     circumventing: `Паттерн «${match}» указывает на попытку обхода политик Google Ads. ML-модераторы Google обучены на сотнях тысяч кейсов клоакинга и фарминга.`,
     gambling: `Термин «${match}» относится к игорной вертикали. Google Ads требует сертификацию для рекламы гемблинга: лицензия регулятора, сертификат соответствия, дисклеймер.`,
@@ -77,7 +123,7 @@ export function getTriggerExplanation(catKey, match) {
  * TODO BACKEND: Add readability score (Flesch-Kincaid)
  */
 export function checkUniqueness(text) {
-  if (!text || text.length < 20) return { score: 0, label: "Нет данных", details: [] };
+  if (!text || text.length < 20) return { score: null, label: "Нет данных", details: [] };
 
   const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
   const genericPatterns = [

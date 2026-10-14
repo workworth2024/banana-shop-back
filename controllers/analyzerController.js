@@ -1,7 +1,9 @@
 import CustomerUser from '../models/CustomerUser.js';
 import SiteAnalysis from '../models/SiteAnalysis.js';
 import { runSiteScan } from '../services/siteAnalyzer/index.js';
-import { normalizeUrl } from '../services/siteAnalyzer/htmlFetcher.js';
+import { normalizeUrl, localizeFetchError } from '../services/siteAnalyzer/htmlFetcher.js';
+import { normalizeLang } from '../services/siteAnalyzer/i18n.js';
+import { checkUrl } from '../services/siteAnalyzer/urlTools.js';
 import {
   getAnalyzerLimitsView,
   consumeAnalyzerCredit,
@@ -23,23 +25,26 @@ export const runAnalyzerScan = async (req, res) => {
   let creditSource = null;
 
   try {
-    const { url, vertical = 'general', geo = 'US' } = req.body;
+    const { url, vertical = 'auto', geo = 'auto' } = req.body;
+    // report language = the language selected on the site
+    const lang = normalizeLang(req.body.lang);
+    const en = lang === 'en';
     if (!url || typeof url !== 'string') {
-      return res.status(400).json({ message: 'URL обязателен' });
+      return res.status(400).json({ message: en ? 'URL is required' : 'URL обязателен' });
     }
 
-    let normalizedUrl;
-    try {
-      normalizedUrl = normalizeUrl(url);
-    } catch {
-      return res.status(400).json({ message: 'Некорректный URL' });
+    // repair typos and make sure the domain exists BEFORE a credit is spent
+    const checked = await checkUrl(url, lang);
+    if (!checked.ok) {
+      return res.status(422).json({ message: checked.reason, suggestion: checked.suggestion || null, fixes: checked.fixes });
     }
+    const normalizedUrl = normalizeUrl(checked.url);
 
     const consumed = await consumeAnalyzerCredit(customerId);
     if (!consumed.ok) {
       const limits = getAnalyzerLimitsView(req.customer);
       return res.status(429).json({
-        message: 'Дневной лимит анализов исчерпан. Совершите покупку, чтобы получить дополнительные проверки.',
+        message: en ? 'Daily scan limit reached. Make a purchase to get extra scans.' : 'Дневной лимит анализов исчерпан. Совершите покупку, чтобы получить дополнительные проверки.',
         limits
       });
     }
@@ -48,16 +53,18 @@ export const runAnalyzerScan = async (req, res) => {
     const record = await SiteAnalysis.create({
       customerId,
       url: normalizedUrl,
-      vertical,
-      geo: String(geo || 'US').toUpperCase(),
+      vertical: String(vertical || 'auto').slice(0, 20),
+      geo: String(geo || 'auto').slice(0, 4).toUpperCase(),
       status: 'pending',
       creditSource
     });
 
     try {
-      const result = await runSiteScan({ url: normalizedUrl, vertical, geo });
+      const result = await runSiteScan({ url: normalizedUrl, vertical, geo, lang });
 
       record.status = 'completed';
+      record.vertical = result.vertical;
+      record.geo = result.geo;
       record.riskScore = result.risk.score;
       record.riskLevel = result.risk.level;
       record.result = result;
@@ -83,7 +90,7 @@ export const runAnalyzerScan = async (req, res) => {
       await refundAnalyzerCredit(customerId, creditSource);
 
       return res.status(502).json({
-        message: `Не удалось просканировать сайт: ${scanError.message}`
+        message: en ? `Couldn't scan the site: ${localizeFetchError(scanError.message, lang)}` : `Не удалось просканировать сайт: ${scanError.message}`
       });
     }
   } catch (error) {
@@ -139,5 +146,16 @@ export const getMyAnalysis = async (req, res) => {
   } catch (error) {
     console.error('[Analyzer] getMyAnalysis error:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+/** Public helper for the scan form: cleans the typed URL and checks the domain resolves. */
+export const checkAnalyzerUrl = async (req, res) => {
+  const lang = normalizeLang(req.query.lang);
+  try {
+    return res.json(await checkUrl(String(req.query.url || '').slice(0, 2000), lang));
+  } catch (e) {
+    console.error('[Analyzer] check-url error:', e.message);
+    return res.status(500).json({ ok: false, message: 'Server error' });
   }
 };

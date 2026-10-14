@@ -11,20 +11,25 @@
 /**
  * Social media platform detection patterns.
  */
+// Domain match anchored at a host boundary, so "x.com" doesn't fire on "fax.com"/"box.com"
+// and "t.co" doesn't fire on every "*t.com". Non-global on purpose: a /g regex keeps
+// lastIndex between .test() calls, and these module-level regexes are shared by all scans.
+const host = (src) => new RegExp(`(?<![\\w.-])(?:www\\.)?${src}(?![\\w-])`, 'i');
+
 export const SOCIAL_PATTERNS = {
-  facebook:   { name: "Facebook",   patterns: [/facebook\.com/gi, /fb\.com/gi, /fb\.me/gi],                                          icon: "📘" },
-  instagram:  { name: "Instagram",  patterns: [/instagram\.com/gi, /instagr\.am/gi],                                               icon: "📸" },
-  twitter:    { name: "Twitter / X",  patterns: [/twitter\.com/gi, /x\.com/gi, /t\.co/gi],                                           icon: "🐦" },
-  telegram:   { name: "Telegram",   patterns: [/t\.me/gi, /telegram\.me/gi, /telegram\.org/gi, /tg:\/\//gi],                          icon: "✈️" },
-  whatsapp:   { name: "WhatsApp",   patterns: [/wa\.me/gi, /whatsapp\.com/gi, /api\.whatsapp\.com/gi],                             icon: "💬" },
-  youtube:    { name: "YouTube",    patterns: [/youtube\.com/gi, /youtu\.be/gi, /youtube-nocookie\.com/gi],                         icon: "▶️" },
-  tiktok:     { name: "TikTok",     patterns: [/tiktok\.com/gi, /vm\.tiktok\.com/gi],                                               icon: "🎵" },
-  linkedin:   { name: "LinkedIn",   patterns: [/linkedin\.com/gi, /linked\.in/gi],                                                icon: "💼" },
-  discord:    { name: "Discord",    patterns: [/discord\.gg/gi, /discord\.com/gi, /discordapp\.com/gi],                            icon: "🎮" },
-  reddit:     { name: "Reddit",     patterns: [/reddit\.com/gi, /redd\.it/gi],                                                     icon: "🔴" },
-  pinterest:  { name: "Pinterest",  patterns: [/pinterest\.com/gi, /pin\.it/gi],                                                  icon: "📌" },
-  snapchat:   { name: "Snapchat",   patterns: [/snapchat\.com/gi, /snap\.com/gi],                                                 icon: "👻" },
-  trustpilot: { name: "Trustpilot", patterns: [/trustpilot\.com/gi],                                                              icon: "⭐" },
+  facebook:   { name: "Facebook",   patterns: [host('facebook\\.com(?!/tr)'), host('fb\\.com'), host('fb\\.me')],                 icon: "📘" },
+  instagram:  { name: "Instagram",  patterns: [host('instagram\\.com'), host('instagr\\.am')],                                   icon: "📸" },
+  twitter:    { name: "Twitter / X",  patterns: [host('twitter\\.com'), host('x\\.com'), host('t\\.co/')],                       icon: "🐦" },
+  telegram:   { name: "Telegram",   patterns: [host('t\\.me/'), host('telegram\\.me'), /tg:\/\//i],                               icon: "✈️" },
+  whatsapp:   { name: "WhatsApp",   patterns: [host('wa\\.me'), host('whatsapp\\.com'), host('api\\.whatsapp\\.com')],           icon: "💬" },
+  youtube:    { name: "YouTube",    patterns: [host('youtube\\.com'), host('youtu\\.be'), host('youtube-nocookie\\.com')],        icon: "▶️" },
+  tiktok:     { name: "TikTok",     patterns: [host('tiktok\\.com/@'), host('vm\\.tiktok\\.com')],                               icon: "🎵" },
+  linkedin:   { name: "LinkedIn",   patterns: [host('linkedin\\.com'), host('linked\\.in')],                                    icon: "💼" },
+  discord:    { name: "Discord",    patterns: [host('discord\\.gg'), host('discord\\.com/invite')],                              icon: "🎮" },
+  reddit:     { name: "Reddit",     patterns: [host('reddit\\.com/(?:r|u|user)/'), host('redd\\.it')],                          icon: "🔴" },
+  pinterest:  { name: "Pinterest",  patterns: [host('pinterest\\.com'), host('pin\\.it')],                                      icon: "📌" },
+  snapchat:   { name: "Snapchat",   patterns: [host('snapchat\\.com/add')],                                                    icon: "👻" },
+  trustpilot: { name: "Trustpilot", patterns: [host('trustpilot\\.com/review')],                                               icon: "⭐" },
 };
 
 /**
@@ -35,16 +40,17 @@ export const SOCIAL_PATTERNS = {
  * TODO BACKEND: Add server-side tracking detection (GTM SS, FB CAPI)
  */
 export const TRACKING_PATTERNS = {
-  ga4:            { name: "Google Analytics 4",  patterns: [/gtag\('config',\s*'(G-[A-Z0-9]{8,12})'/gi, /G-[A-Z0-9]{8,12}/gi],                                    icon: "📊" },
-  gtm:            { name: "Google Tag Manager",  patterns: [/googletagmanager\.com\/gtm\.js\?id=(GTM-[A-Z0-9]{4,8})/gi, /GTM-[A-Z0-9]{4,8}/gi],              icon: "🏷️" },
-  fb_pixel:       { name: "Facebook Pixel",      patterns: [/fbevents\.net/gi, /facebook\.com\/tr/gi, /fbq\s*\(/gi],                                              icon: "👤" },
-  fb_capi:        { name: "Facebook CAPI",       patterns: [/ConversionsAPI/gi, /capi.*facebook/gi, /server.*send.*event/gi],                                     icon: "📡" },
+  // GA4 / GTM ids are upper-case by spec — case-insensitive matching fired on CSS classes like "img-container1"
+  ga4:            { name: "Google Analytics 4",  patterns: [/gtag\(\s*['"]config['"],\s*['"](G-[A-Z0-9]{8,12})['"]/, /(?<![\w-])(G-[A-Z0-9]{8,12})(?![\w-])/],      icon: "📊" },
+  gtm:            { name: "Google Tag Manager",  patterns: [/googletagmanager\.com\/gtm\.js\?id=(GTM-[A-Z0-9]{4,8})/, /(?<![\w-])(GTM-[A-Z0-9]{4,8})(?![\w-])/],     icon: "🏷️" },
+  fb_pixel:       { name: "Facebook Pixel",      patterns: [/connect\.facebook\.net\/[^"']*fbevents\.js/gi, /facebook\.com\/tr/gi, /fbq\s*\(/gi],                    icon: "👤" },
+  fb_capi:        { name: "Facebook CAPI",       patterns: [/ConversionsAPI/gi, /capi.*facebook/gi],                                                            icon: "📡" },
   yandex_metrika: { name: "Yandex Metrika",      patterns: [/mc\.yandex\.ru\/watch\/(\d+)/gi, /ym\((\d+),\s*['"]init['"]/gi, /mc\.yandex\.ru\/metrika\/tag\.js\?id=(\d+)/gi], icon: "🟡" },
   tiktok_pixel:   { name: "TikTok Pixel",        patterns: [/analytics\.tiktok\.com/gi, /ttq\s*\(/gi],                                                              icon: "🎵" },
   hotjar:         { name: "Hotjar",              patterns: [/hotjar\.com/gi, /hjScript/gi, /hj\.js/gi],                                                             icon: "🔥" },
   clarity:        { name: "Microsoft Clarity",   patterns: [/clarity\.ms\/tag/gi, /clarity\.js/gi],                                                                icon: "🪟" },
   amplitude:      { name: "Amplitude",           patterns: [/amplitude\.com/gi, /amplitude\.js/gi],                                                                 icon: "📈" },
-  segment:        { name: "Segment.io",          patterns: [/segment\.com\/analytics/gi, /analytics\.js/gi, /segment\.io/gi],                                       icon: "🔄" },
+  segment:        { name: "Segment.io",          patterns: [/cdn\.segment\.com/gi, /segment\.io/gi],                                                              icon: "🔄" },
 };
 
 /**
@@ -83,8 +89,7 @@ export function analyzeSEO(url, text, headline, description) {
     let found = false;
     let extractedId = null;
     for (const pattern of tracker.patterns) {
-      const flags = [...new Set((pattern.flags.replace('g', '') + 'i').split(''))].join('');
-      const patternCopy = new RegExp(pattern.source, flags);
+      const patternCopy = new RegExp(pattern.source, pattern.flags.replace('g', ''));
       const execResult = patternCopy.exec(combined);
       if (execResult) { found = true; if (execResult[1]) extractedId = execResult[1]; break; }
     }
@@ -141,11 +146,9 @@ export function analyzeSEO(url, text, headline, description) {
   const hasUpgradeInsecure = /<meta[^>]*http-equiv=["']Content-Security-Policy["'][^>]*upgrade-insecure-requests/i.test(combined);
 
   if (hasHttpsUrl || hasHSTS || canonicalHttps || ogUrlHttps) {
+    // TLS version / certificate age / SAN count aren't measured here (the old demo engine
+    // made them up: hard-coded "TLS 1.3", random cert age) — left null/default on purpose.
     results.ssl.hasSSL = true;
-    results.ssl.tlsVersion = "TLS 1.3";
-    results.ssl.certAge = Math.floor(Math.random() * 300) + 30;
-    results.ssl.sanCount = (url && (url.includes("cloudflare") || url.includes("readcorner"))) ? 10 : 1;
-    results.ssl.sharedHosting = results.ssl.sanCount > 3;
     if (hasHSTS) results.ssl.issues.push("✅ HSTS обнаружен — Chrome автоматически открывает сайт по HTTPS.");
     if (canonicalHttps) results.ssl.issues.push("✅ Canonical URL использует HTTPS.");
     if (hasUpgradeInsecure) results.ssl.issues.push("✅ CSP upgrade-insecure-requests — браузер апгрейдит HTTP до HTTPS.");
@@ -158,7 +161,6 @@ export function analyzeSEO(url, text, headline, description) {
   } else if (url && url.startsWith("http://")) {
     results.ssl.hasSSL = false;
     results.ssl.issues.push("❌ Сайт использует HTTP без HTTPS — Google Chrome помечает как «Not Secure».");
-    results.ssl.issues.push("🔍 В реальном скане: делается HEAD-запрос на http://URL — если 301/308 redirect на https://, значит HTTPS есть.");
   } else {
     results.ssl.hasSSL = false;
     results.ssl.issues.push("❌ HTTPS не обнаружен.");
@@ -176,14 +178,22 @@ export function analyzeSEO(url, text, headline, description) {
   results.structure.hasTitle = !!(results.structure.title && results.structure.title.length > 3);
   results.structure.hasMetaDescription = !!(results.structure.metaDescription && results.structure.metaDescription.length > 5);
   results.structure.hasH1 = !!(h1Match && h1Match[1].trim().length > 0);
-  results.structure.hasContact = /contact|связаться|телефон|email|support|поддержка|help|свяжитесь/i.test(lowerCombined);
-  results.structure.hasAbout = /about|о нас|о компании|who we are|our story/i.test(lowerCombined);
-  results.structure.hasPrivacy = /privacy|политика конфиденциальности|gdpr/i.test(lowerCombined)
-                              || /href=["'][^"']*privacy[^"']*["']/i.test(combined);
-  results.structure.hasTerms = /terms|условия использования|terms of service|tos/i.test(lowerCombined)
-                            || /href=["'][^"']*terms[^"']*["']/i.test(combined);
-  results.structure.hasCookiePolicy = /cookie|политика\s*cookies|cookies/i.test(lowerCombined)
-                                   || /href=["'][^"']*cookie[^"']*["']/i.test(combined);
+  // Trust pages are judged on what a visitor/reviewer sees (visible text + link targets), not on
+  // raw HTML: inline JS/CSS almost always contains "email", "help", "privacy", "tos" (photos,
+  // toString…), which made these checks pass on nearly every page.
+  const visible = combined
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .toLowerCase();
+  const hrefs = (combined.match(/href=["'][^"']*["']/gi) || []).join(' ').toLowerCase();
+  results.structure.hasContact = /\b(contact|contacts|contact us|support)\b|связаться|свяжитесь|контакты|телефон|поддержка/.test(visible)
+                              || /mailto:|tel:|contact/.test(hrefs);
+  results.structure.hasAbout = /\b(about us|about|who we are|our story)\b|о нас|о компании/.test(visible) || /about/.test(hrefs);
+  results.structure.hasPrivacy = /\bprivacy\b|конфиденциальност|\bgdpr\b/.test(visible) || /privacy|konfidenc|datenschutz/.test(hrefs);
+  results.structure.hasTerms = /\b(terms|terms of service|terms and conditions|terms & conditions)\b|условия использования|пользовательское соглашение|оферт/.test(visible)
+                            || /terms|\btos\b|oferta|agreement/.test(hrefs);
+  results.structure.hasCookiePolicy = /\bcookies?\b|файлы cookie/.test(visible) || /cookie/.test(hrefs);
   results.structure.hasTelegram = /t\.me\//i.test(combined) || /telegram/i.test(lowerCombined);
   results.structure.hasYouTube = /youtube\.com/i.test(combined) || /youtu\.be/i.test(combined);
   results.structure.hreflang = hreflangMatches ? hreflangMatches.map(m => m.match(/hreflang=["']([^"']*)["']/i)?.[1]).filter(Boolean) : [];

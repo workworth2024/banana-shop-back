@@ -4,6 +4,7 @@
  * Docs: https://viewdns.info/api/documentation/
  */
 import dns from 'dns';
+import { registrable } from './lookalike.js';
 
 const VIEWDNS_BASE = 'https://api.viewdns.info';
 const VIEWDNS_TIMEOUT_MS = 15000;
@@ -83,8 +84,68 @@ export async function reverseIpLookup(ip) {
   }
 }
 
+const RDAP_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
+const RDAP_BOOTSTRAP_TTL_MS = 24 * 3600 * 1000;
+let rdapBootstrap = { at: 0, byTld: null };
+
+// IANA bootstrap: TLD → authoritative RDAP server (cached for a day)
+async function rdapBaseFor(domain) {
+  if (!rdapBootstrap.byTld || Date.now() - rdapBootstrap.at > RDAP_BOOTSTRAP_TTL_MS) {
+    const res = await fetch(RDAP_BOOTSTRAP_URL, { signal: AbortSignal.timeout(VIEWDNS_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`RDAP bootstrap HTTP ${res.status}`);
+    const byTld = new Map();
+    for (const [tlds, urls] of (await res.json()).services || []) {
+      const base = urls.find(u => u.startsWith('https://')) || urls[0];
+      tlds.forEach(tld => byTld.set(tld.toLowerCase(), base.endsWith('/') ? base : `${base}/`));
+    }
+    rdapBootstrap = { at: Date.now(), byTld };
+  }
+  return rdapBootstrap.byTld.get(domain.split('.').pop()) || null;
+}
+
+function rdapRegistrar(entities = []) {
+  const registrar = entities.find(e => (e.roles || []).includes('registrar'));
+  const fn = registrar?.vcardArray?.[1]?.find(f => f[0] === 'fn');
+  return fn?.[3] || null;
+}
+
+/**
+ * RDAP — the ICANN-mandated successor of port-43 WHOIS: free, keyless, JSON, served by
+ * each registry. Only the registrable domain is queried: walking up from a subdomain used
+ * to return the age of a shared zone (x.de.com → de.com, 36 years). Some ccTLDs have no
+ * RDAP server at all.
+ */
+async function rdapLookup(hostname) {
+  const { domain } = registrable(hostname);
+  const base = await rdapBaseFor(domain);
+  if (!base) throw new Error(`RDAP: no server for .${domain.split('.').pop()}`);
+  const res = await fetch(`${base}domain/${encodeURIComponent(domain)}`, {
+    signal: AbortSignal.timeout(VIEWDNS_TIMEOUT_MS),
+    headers: { Accept: 'application/rdap+json, application/json' }
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data) throw new Error(`RDAP HTTP ${res.status}`);
+  const eventDate = (action) => (data.events || []).find(e => e.eventAction === action)?.eventDate || null;
+  const created = eventDate('registration');
+  return {
+    registrar: rdapRegistrar(data.entities),
+    createdDate: created,
+    expiresDate: eventDate('expiration'),
+    domainAge: created ? Math.floor((Date.now() - new Date(created).getTime()) / 86400000) : null,
+    registrant: null,
+    source: 'rdap'
+  };
+}
+
 export async function whoisLookup(domain) {
   try {
+    const rdap = await rdapLookup(domain);
+    if (rdap.domainAge != null) return rdap;
+  } catch (e) {
+    console.error('[RDAP] lookup error:', e.message);
+  }
+  try {
+    // ViewDNS WHOIS requires a paid API key (free keys get HTTP 403)
     const data = await viewDnsGet('/whois/v2/', { domain });
     const r = data?.response;
     if (!r) throw new Error('empty response');
