@@ -3,7 +3,9 @@ import CustomerUser from '../models/CustomerUser.js';
 export const ANALYZER_DAILY_LIMIT = 3;
 export const ANALYZER_CREDITS_PER_UNIT = 3;
 
+// The daily quota follows the UTC calendar day (00:00 UTC = 03:00 Moscow time).
 const todayStr = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+const nextResetIso = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.toISOString(); };
 
 /**
  * Grants permanent bonus analyzer credits for a purchase.
@@ -39,7 +41,8 @@ export function getAnalyzerLimitsView(customer) {
     dailyUsed,
     dailyRemaining,
     bonusCredits,
-    totalRemaining: dailyRemaining + bonusCredits
+    totalRemaining: dailyRemaining + bonusCredits,
+    resetsAt: nextResetIso()
   };
 }
 
@@ -62,7 +65,7 @@ export async function consumeAnalyzerCredit(customerId) {
     { returnDocument: 'after' }
   ).catch(() => null);
 
-  if (dailyConsumed) return { ok: true, source: 'daily' };
+  if (dailyConsumed) return { ok: true, source: 'daily', day: today };
 
   const sameDayConsumed = await CustomerUser.findOneAndUpdate(
     {
@@ -74,7 +77,7 @@ export async function consumeAnalyzerCredit(customerId) {
     { returnDocument: 'after' }
   ).catch(() => null);
 
-  if (sameDayConsumed) return { ok: true, source: 'daily' };
+  if (sameDayConsumed) return { ok: true, source: 'daily', day: today };
 
   const bonusConsumed = await CustomerUser.findOneAndUpdate(
     { _id: customerId, 'analyzer.bonusCredits': { $gte: 1 } },
@@ -87,13 +90,20 @@ export async function consumeAnalyzerCredit(customerId) {
   return { ok: false };
 }
 
-/** Refunds a previously consumed credit (used when a scan fails before completion). */
-export async function refundAnalyzerCredit(customerId, source) {
+/**
+ * Refunds a previously consumed credit (used when a scan fails before completion).
+ * A daily credit is returned only to the same UTC day it was taken from and never below 0 —
+ * a scan that started at 23:59 and failed after midnight must not eat into tomorrow's quota.
+ */
+export async function refundAnalyzerCredit(customerId, source, day = todayStr()) {
   try {
     if (source === 'bonus') {
       await CustomerUser.updateOne({ _id: customerId }, { $inc: { 'analyzer.bonusCredits': 1 } });
     } else {
-      await CustomerUser.updateOne({ _id: customerId }, { $inc: { 'analyzer.dailyUsed': -1 } });
+      await CustomerUser.updateOne(
+        { _id: customerId, 'analyzer.dailyDate': day, 'analyzer.dailyUsed': { $gt: 0 } },
+        { $inc: { 'analyzer.dailyUsed': -1 } }
+      );
     }
   } catch (e) {
     console.error('[AnalyzerCredits] refundAnalyzerCredit error:', e.message);

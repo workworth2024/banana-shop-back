@@ -28,6 +28,7 @@ const siteAnalysisSchema = new mongoose.Schema({
   },
   riskScore: { type: Number, default: null },
   riskLevel: { type: String, default: null }, // LOW | MEDIUM | HIGH | CRITICAL
+  favicon: { type: String, default: null }, // the site's own icon as a data: URI (≤ 48 KB), shown in the history list
   result: { type: mongoose.Schema.Types.Mixed, default: null },
   error: { type: String, default: null }
 }, { timestamps: true });
