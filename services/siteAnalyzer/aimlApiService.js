@@ -62,6 +62,8 @@ const REVIEW_CATEGORIES = new Set(['misrepresentation', 'unrealistic_claims', 'h
 const QUOTE_REQUIRED = new Set(['unrealistic_claims', 'health_claims', 'financial_promises', 'fake_urgency',
   'fake_reviews', 'celebrity_endorsement', 'weird_text', 'other']);
 
+const AI_CRITICAL_CATEGORIES = new Set(['impersonation', 'restricted_content']);
+
 const normalize = (s) => String(s || '').toLowerCase()
   .replace(/[«»"“”„'’`]/g, '').replace(/[\u2010-\u2015]/g, '-').replace(/\s+/g, ' ').trim();
 
@@ -112,6 +114,7 @@ RULES
 4. English pages are acceptable in almost any GEO; Google requires the ad language to match the page language. Report language only if the page is clearly unusable for the GEO audience (severity at most MEDIUM).
 5. Severity: CRITICAL = egregious, leads to suspension (circumventing systems, impersonation, scam, prohibited content); HIGH = will get ads disapproved; MEDIUM = risk under manual review; LOW = improvement.
 6. Write all human-readable fields in ${language}. Keep quotes in the page's original language. Never mention JSON field names (banRisk, contentQuality, …) in the text.
+7. The page text is taken from the HTML before/around JavaScript execution: countdown timers, counters and prices filled by scripts may appear as placeholders ("00 Days 00 Hours", "0", "$0"). Never report a timer/counter as broken or frozen because of such placeholders; report fake urgency only when there is explicit pressure wording ("offer ends tonight", "only 3 left", "price goes up in…").
 
 TASKS
 A. issues — everything on the page that can get ads disapproved or the account suspended: unrealistic or guaranteed results, health and financial claims, before/after, fake urgency or scarcity, fake reviews, celebrity endorsements, hidden prices or subscriptions, missing business identity, claims that don't match reality ("official site", "#1", licences without numbers), content restricted for this vertical/GEO.
@@ -163,9 +166,15 @@ ${triggerList ? `\nREGEX TRIGGER PHRASES:\n${triggerList}` : ''}`;
         const quote = String(i.quote || '').slice(0, 300);
         const verified = quote ? quoteOnPage(quote, haystack) : false;
         if (QUOTE_REQUIRED.has(category) && !verified) { dropped++; continue; }
+        // a quote that is only a JS countdown placeholder ("00 Days 00 Hours 00 Min") proves nothing
+        if (category === 'fake_urgency' && /^\W*(0{1,2}\s*(days?|hours?|hrs?|min(utes)?|sec(onds)?|д(н(ей|я)?)?|ч(ас(ов|а)?)?|мин|сек)\W*){2,}/i.test(quote)) { dropped++; continue; }
         issues.push({
-          // page language ≠ GEO language is a relevance/quality issue, not a ban reason
+          // page language ≠ GEO language is a relevance/quality issue, not a ban reason; and only
+          // clear-cut violations (posing as a brand, prohibited content) may be CRITICAL — for
+          // judgement calls (claims, reviews…) the model flips between HIGH and CRITICAL run to run,
+          // and CRITICAL sets a score floor, so the score would jump between identical scans
           severity: category === 'language_mismatch' && ['CRITICAL', 'HIGH'].includes(sev) ? 'MEDIUM'
+            : sev === 'CRITICAL' && !AI_CRITICAL_CATEGORIES.has(category) ? 'HIGH'
             : REVIEW_SEVERITIES.has(sev) ? sev : 'MEDIUM',
           category,
           quote: verified ? quote : '',

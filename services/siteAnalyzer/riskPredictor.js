@@ -70,6 +70,11 @@ export function reverseIPLookup(ip, hosting) {
 // "egregious" in Google's policy (suspension on detection, no warning), so one confirmed
 // CRITICAL phrase must matter more than any amount of missing social links.
 const TRIGGER_POINTS = { CRITICAL: 50, HIGH: 25, MEDIUM: 12 };
+const HARD_AI_CATEGORIES = new Set(['impersonation', 'restricted_content', 'health_claims', 'financial_promises']);
+// Google: "Unreliable claims" violations get a warning at least 7 days before any suspension —
+// fixable copy issues, unlike egregious Misrepresentation (scams, impersonation)
+const SOFT_AI_POINTS = { CRITICAL: 10, HIGH: 8, MEDIUM: 4 };
+const SOFT_AI_CAP = 25;
 // Score floors for confirmed evidence: a weighted average alone dilutes a single egregious
 // finding below LOW/MEDIUM thresholds.
 const FLOOR_CRITICAL_TRIGGER = 70;   // ≥1 confirmed CRITICAL phrase → at least HIGH
@@ -94,14 +99,17 @@ export function domainRiskScore(hostname, whois, impersonation, lang = 'ru') {
   const reasons = [];
   const age = whois?.domainAge;
   const ageText = (d) => (d < 365 ? t(`домену ${d} дн.`, `domain is ${d} days old`) : t(`домену ${Math.floor(d / 365)} г.`, `domain is ${Math.floor(d / 365)} y old`));
-  if (age != null && age < 30) score += 60;
-  else if (age != null && age < 90) score += 40;
-  else if (age != null && age < 180) score += 20;
+  // Google lists *account* maturity, not domain age, among its trust factors — a fresh domain is
+  // a prior from abuse statistics (most phishing domains are days old), not a policy problem
+  if (age != null && age < 30) score += 40;
+  else if (age != null && age < 90) score += 25;
+  else if (age != null && age < 180) score += 10;
   reasons.push(age != null ? ageText(age) : t('возраст домена неизвестен', 'domain age unknown'));
   const tld = String(hostname || '').toLowerCase().split('.').pop();
   if (ABUSED_TLDS.has(tld)) { score += 25; reasons.push(t(`зона .${tld} — в топе по злоупотреблениям`, `.${tld} is a top-abused zone`)); }
   if (impersonation?.isLikely) { score += 60; reasons.push(t(`похоже на имперсонацию ${impersonation.brand || 'бренда'}`, `looks like impersonation of ${impersonation.brand || 'a brand'}`)); }
-  else if (impersonation?.kind === 'brand_mention') { score += 30; reasons.push(t(`в имени чужой бренд ${impersonation.brand}`, `third-party brand in the name: ${impersonation.brand}`)); }
+  // the AI alone (no look-alike in our popular-domain list) is a weak hint, often a common word
+  else if (impersonation?.kind === 'brand_mention') { score += impersonation.source === 'ai' ? 10 : 30; reasons.push(t(`в имени чужой бренд ${impersonation.brand}`, `third-party brand in the name: ${impersonation.brand}`)); }
   return { score: Math.min(100, score), explain: reasons.join(', ') };
 }
 
@@ -114,10 +122,17 @@ export function textTriggerScore(textResults, aiReview = null) {
     seen.add(key);
     points += TRIGGER_POINTS[i.severity] || 0;
   }
-  // AI page-review findings (misleading claims, fake urgency, missing business info…) count
-  // like trigger phrases; LOW findings are advice, not risk.
-  for (const i of aiReview?.issues || []) points += TRIGGER_POINTS[i.severity] || 0;
-  return Math.min(100, points);
+  // AI page-review findings. Hard ones (posing as a brand, prohibited content, regulated health /
+  // money claims) count like trigger phrases. Judgement calls about the copy — "inflated" numbers,
+  // reviews on a new domain, a missing detail — are what a reviewer may question, not what gets an
+  // account banned, and the model's severity for them varies run to run: they weigh about half and
+  // together can't push the factor past SOFT_AI_CAP. LOW findings are advice, not risk.
+  let soft = 0;
+  for (const i of aiReview?.issues || []) {
+    if (HARD_AI_CATEGORIES.has(i.category)) points += TRIGGER_POINTS[i.severity] || 0;
+    else soft += SOFT_AI_POINTS[i.severity] || 0;
+  }
+  return Math.min(100, points + Math.min(SOFT_AI_CAP, soft));
 }
 
 /**

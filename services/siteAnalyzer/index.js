@@ -11,7 +11,10 @@ import { detectLookalike } from './lookalike.js';
 import { auditSite, visibleText } from './siteAudit.js';
 import { normalizeLang, tr } from './i18n.js';
 import { detectVertical, detectGeo } from './detectContext.js';
+import { getFavicon } from './favicon.js';
 
+// bump when scan results change meaning — the UI flags reports from older engines as outdated
+export const ANALYZER_ENGINE = '2026-10-14.5';
 const REGULATED = new Set(['gambling', 'nutra', 'dating', 'crypto', 'finance']);
 const VERTICAL_NAMES = {
   general: ['Общая', 'General'], nutra: ['Нутра / здоровье', 'Nutra / health'], gambling: ['Гемблинг', 'Gambling'], dating: ['Дейтинг', 'Dating'],
@@ -85,7 +88,7 @@ function buildWarnings({ lang, whois, verticalKey, impersonation, ai, audit, ris
     `Выбрана страна ${context.geo.selected}, но сайт ориентирован на ${context.geo.detected}${context.geo.evidence.length ? ` (${context.geo.evidence.join(', ')})` : ''}. Проверьте, куда вы на самом деле будете лить трафик.`,
     `You chose ${context.geo.selected}, but the site targets ${context.geo.detected}${context.geo.evidence.length ? ` (${context.geo.evidence.join(', ')})` : ''}. Double-check where you'll actually send traffic.`), 'overview');
   if (impersonation?.isLikely) add('critical', t(`Похоже на имперсонацию ${impersonation.brand || 'чужого бренда'}. `, `Looks like impersonation of ${impersonation.brand || 'another brand'}. `) + impersonation.reason, 'domain');
-  if (whois.domainAge != null && whois.domainAge < 30) add('critical', t(`Сайт совсем новый: домену ${whois.domainAge} дн. Новые домены проходят усиленную проверку, первые запуски часто уходят в бан.`, `Brand-new site: the domain is ${whois.domainAge} days old. New domains get enhanced review; first launches often get suspended.`), 'domain');
+  if (whois.domainAge != null && whois.domainAge < 30) add('warning', t(`Сайт совсем новый: домену ${whois.domainAge} дн. Это не нарушение, но к свежим доменам у систем Google меньше доверия — начинайте с небольших бюджетов.`, `Brand-new site: the domain is ${whois.domainAge} days old. Not a violation, but Google's systems trust fresh domains less — start with small budgets.`), 'domain');
   else if (whois.domainAge != null && whois.domainAge < 90) add('warning', t(`Сайт новый: домену ${whois.domainAge} дн. Свежие домены получают повышенное внимание модерации.`, `New site: the domain is ${whois.domainAge} days old. Fresh domains get extra moderation attention.`), 'domain');
   else if (whois.domainAge == null) add('info', t('Возраст домена определить не удалось.', 'The domain age could not be determined.'), 'domain');
   if (RISKY_VERTICALS[verticalKey]) add('warning', t('Рисковая тематика. ', 'Risky vertical. ') + RISKY_VERTICALS[verticalKey][i], 'overview');
@@ -162,9 +165,10 @@ export async function runSiteScan({ url, vertical = 'general', geo = 'US', lang 
   // External lookups run concurrently; the AI review waits for WHOIS + the audit + PageSpeed
   // is NOT awaited by it (it can take 50s) — speed goes into the facts only if already known.
   const speedPromise = getPageSpeed(finalUrl);
-  const [speed, reverseIp, { whois, lookalike, audit, aiCompliance }] = await Promise.all([
+  const [speed, reverseIp, favicon, { whois, lookalike, audit, aiCompliance }] = await Promise.all([
     speedPromise,
     resolveIp(hostname).then(ip => (ip ? reverseIpLookup(ip) : null)),
+    getFavicon(html, finalUrl).catch(() => null),
     Promise.all([
       whoisLookup(hostname).then(async (w) => ({ whois: w, lookalike: await detectLookalike(hostname, w.domainAge, L) })),
       auditSite({ finalUrl, html, headers: page.headers || {}, vertical: verticalKey, geo: geoKey, render: isShell && renderedVia ? renderPage : null, lang: L })
@@ -253,9 +257,29 @@ export async function runSiteScan({ url, vertical = 'general', geo = 'US', lang 
 
   // Deterministic look-alike check first (an LLM doesn't know which domain is the official
   // one); the AI verdict only adds cases where the page itself claims a foreign brand.
+  // An AI-only impersonation verdict (no look-alike domain) is a warning, not a score floor: the
+  // model sometimes reads a common word in the name ("marketplacer…") as a foreign brand.
   const impersonation = lookalike.isLikely ? lookalike
-    : aiCompliance.impersonation?.isLikely ? { ...aiCompliance.impersonation, kind: 'ai' }
+    : aiCompliance.impersonation?.isLikely ? { ...aiCompliance.impersonation, isLikely: false, kind: 'brand_mention', source: 'ai' }
     : lookalike.kind ? lookalike : null;
+  if (aiCompliance.review) {
+    const t2 = audit.trust;
+    const businessInfoComplete = (t2.contacts.emails.length || t2.contacts.phones.length) && t2.contacts.address
+      && ['contact', 'about', 'privacy'].every((k) => t2.pages[k]?.found && t2.pages[k].verified?.ok !== false);
+    aiCompliance.review.issues = aiCompliance.review.issues
+      // the scanner verified contacts, address and company pages — "no business info" contradicts the facts
+      .filter((i) => !(i.category === 'missing_business_info' && businessInfoComplete))
+      // impersonation needs a look-alike domain to be CRITICAL
+      .map((i) => (i.category === 'impersonation' && i.severity === 'CRITICAL' && !lookalike.isLikely ? { ...i, severity: 'HIGH' } : i));
+    // the overall copy risk can't exceed what the remaining findings support
+    const RANK = ['low', 'medium', 'high', 'critical'];
+    const worst = aiCompliance.review.issues.reduce((m, i) => Math.max(m, ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].indexOf(i.severity)), 0);
+    // copy-only issues (claims, reviews, urgency…) lead to disapprovals/warnings, not bans
+    const hardIssue = aiCompliance.review.issues.some((i) => ['impersonation', 'restricted_content', 'health_claims', 'financial_promises'].includes(i.category) && i.severity !== 'LOW');
+    const cap = Math.max(hardIssue ? worst : Math.min(worst, 1), impersonation?.isLikely ? 3 : 0);
+    const cur = RANK.indexOf(aiCompliance.review.banRisk);
+    if (cur > cap) aiCompliance.review.banRisk = RANK[cap];
+  }
   seoResults.impersonation = impersonation;
   aiCompliance.impersonation = impersonation;
 
@@ -267,6 +291,8 @@ export async function runSiteScan({ url, vertical = 'general', geo = 'US', lang 
     vertical: verticalKey,
     geo: geoKey,
     lang: L,
+    engine: ANALYZER_ENGINE,
+    favicon,
     scannedAt: new Date().toISOString(),
     renderedVia,
     warnings: buildWarnings({

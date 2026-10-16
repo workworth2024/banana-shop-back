@@ -233,6 +233,47 @@ function checkStructure(html, text, lang) {
 
 // ─── required pages, contacts, consent ────────────────────────────────────────
 
+// Street addresses as people actually write them: "81 Pine Ave, Los Angeles, CA 90077",
+// "270 Ridge Blvd", "Hauptstraße 5, 10115 Berlin", "ул. Ленина, д. 5", UK postcodes, or a
+// schema.org PostalAddress. Returns the matched snippet (shown in the report) or null.
+const STREET_SUFFIX = 'St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Dr|Drive|Ln|Lane|Way|Ct|Court|Pl|Place|Pkwy|Parkway|Hwy|Highway|Sq|Square|Ter|Terrace|Cir|Circle|Trl|Plaza|Suite|Ste';
+const ADDRESS_PATTERNS = [
+  new RegExp(`\\b\\d{1,6}\\s+(?:[A-Z0-9][\\w.'-]*\\s+){1,5}(?:${STREET_SUFFIX})\\b\\.?(?:[^\\n]{0,60}?\\b[A-Z]{2}\\s\\d{5}(?:-\\d{4})?)?`),
+  /[A-Za-z .'-]{2,40},\s*[A-Z]{2}\s\d{5}(?:-\d{4})?\b/,
+  /\b[A-ZÄÖÜ][a-zäöüß-]+(?:straße|strasse|str\.|weg|platz|allee|gasse|ring|damm)\s*\d+[a-z]?(?:,\s*\d{4,5}\s+[A-ZÄÖÜ][a-zäöüß-]+)?/,
+  /\b(?:calle|avenida|avda\.|via|viale|piazza|rue|avenue|boulevard|rua)\s+[^\n,]{2,40},?\s*\d{1,5}/i,
+  /(?:ул\.|улица|проспект|пр-т|пер\.|переулок|шоссе|наб\.)\s*[А-ЯЁа-яё0-9 .-]{2,40},?\s*(?:д\.|дом)?\s*\d+/,
+  /\b[A-Z]{1,2}\d[A-Z\d]?\s\d[A-Z]{2}\b/
+];
+function findAddress(text, html) {
+  for (const re of ADDRESS_PATTERNS) {
+    const m = text.match(re);
+    // drop a phone-number tail glued in front ("+1 (469) 729-2873 81 Pine Ave")
+    if (m) return m[0].trim().replace(/^(\d+\s+)+(?=\d)/, '').slice(0, 120);
+  }
+  const ld = html.match(/"streetAddress"\s*:\s*"([^"]{4,120})"/i);
+  if (ld) return ld[1];
+  const tag = html.match(/<address\b[^>]*>([\s\S]{8,400}?)<\/address>/i);
+  if (tag && /\d/.test(tag[1])) return visibleText(tag[1]).slice(0, 120);
+  return null;
+}
+
+// Hand-made banners (no CMP script): a region labelled "cookie" or cookie wording right next to
+// accept / reject buttons. Checked on the raw HTML because banners are often hidden until JS runs.
+const COOKIE_PHRASE = /(we|this (web)?site|our site|site) (use|uses|rely on|relies on)[^.<]{0,30}cookies|cookies? (help|make|are used)|by (continuing|using)[^.<]{0,60}cookies|accept (all )?cookies|cookie (settings|preferences|consent)|мы используем (файлы )?(cookie|куки)|сайт использует (файлы )?(cookie|куки)|verwendet cookies|wir verwenden cookies|utilizamos cookies|usamos cookies|nous utilisons des cookies|utilizziamo (i )?cookie/i;
+const CONSENT_BUTTON = /\b(accept( all)?|allow( all)?|agree|got it|i understand|ok(ay)?|reject( all)?|decline|deny|manage preferences|customi[sz]e)\b|принять|согласен|понятно|отклонить|akzeptieren|ablehnen|aceptar|rechazar|accepter|refuser|accetta|rifiuta/i;
+function hasCustomCookieBanner(html, text) {
+  if (/(aria-label|id|class|data-[\w-]+)\s*=\s*["'][^"']*cookie[-_ ]?(banner|consent|notice|bar|popup|modal|law|policy-banner)/i.test(html)) return true;
+  if (/role\s*=\s*["'](dialog|alertdialog|region)["'][^>]*aria-label\s*=\s*["'][^"']*cookie/i.test(html)
+    || /aria-label\s*=\s*["'][^"']*cookie[^"']*["'][^>]*role\s*=\s*["'](dialog|alertdialog|region)/i.test(html)) return true;
+  const plain = visibleText(html);
+  const m = plain.match(COOKIE_PHRASE) || text.match(COOKIE_PHRASE);
+  if (!m) return false;
+  const src = plain.includes(m[0]) ? plain : text;
+  const at = src.indexOf(m[0]);
+  return CONSENT_BUTTON.test(src.slice(Math.max(0, at - 200), at + m[0].length + 400));
+}
+
 async function verifyPage(url, render) {
   try {
     const r = await fetchPublic(url, { timeoutMs: AUX_TIMEOUT_MS, maxBytes: AUX_MAX_BYTES });
@@ -276,13 +317,12 @@ async function checkTrustPages({ html, finalUrl, vertical, geo, render, lang }) 
     ...(text.match(/\+\d[\d\s()\-]{7,16}\d/g) || [])
   ])].slice(0, 5);
   const messengers = [...new Set((html.match(/(?:t\.me|wa\.me|api\.whatsapp\.com|viber:)\/?[^"'\s>]*/gi) || []).map((m) => m.split('/')[0]))];
-  const address = /\b(street|st\.|avenue|ave\.|road|suite|floor|strasse|straße|calle|улица|ул\.|проспект|офис)\b[^.]{0,80}\d/i.test(text)
-    || /<script[^>]+ld\+json[^>]*>[\s\S]*?"(address|PostalAddress)"/i.test(html);
+  const address = findAddress(text, html);
   const ownDomainEmail = emails.some((e) => e.endsWith(`@${host}`) || e.split('@')[1]?.endsWith(`.${host}`));
 
   const cmp = CMP_PATTERNS.filter(([, re]) => re.test(html)).map(([name]) => name);
   const consentMode = /gtag\(\s*['"]consent['"]\s*,\s*['"]default['"]/i.test(html) || /['"]ad_user_data['"]/i.test(html);
-  const cookieBanner = cmp.length > 0 || /cookie[^<]{0,40}(consent|banner|notice|accept)|accept\s+(all\s+)?cookies|принять\s+(все\s+)?cookie/i.test(html);
+  const cookieBanner = cmp.length > 0 || hasCustomCookieBanner(html, text);
   const consentRequired = CONSENT_GEOS.has(String(geo || '').toUpperCase());
   const usesGoogleTags = /googletagmanager\.com|gtag\(/i.test(html);
 

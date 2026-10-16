@@ -30,7 +30,7 @@ const VERTICAL_WORDS = {
   finance: ['forex', 'trading', 'invest', 'loan', 'credit', 'mortgage', 'broker', 'cfd', 'stocks', 'insurance', 'payday', 'interest rate', 'кредит', 'займ', 'инвестиц', 'брокер', 'трейдинг', 'ипотек', 'страхован', 'préstamo', 'kredit', 'prestito', 'crédit'],
   software: ['download', 'free trial', 'saas', 'software', 'app for', 'install', 'api', 'dashboard', 'sign up free', 'pricing plans', 'integrations', 'скачать', 'программа', 'приложение', 'подписк', 'descargar', 'herunterladen', 'télécharger'],
   ecom: ['add to cart', 'add to bag', 'shopping cart', 'checkout', 'free shipping', 'in stock', 'buy now', 'shop now', 'size guide', 'returns', 'в корзину', 'корзина', 'доставка', 'купить', 'оформить заказ', 'añadir al carrito', 'in den warenkorb', 'ajouter au panier', 'aggiungi al carrello', 'comprar'],
-  real_estate: ['real estate', 'apartments for sale', 'property', 'realtor', 'rent an apartment', 'mortgage calculator', 'недвижимост', 'квартир', 'новостройк', 'inmobiliaria', 'immobilien', 'immobilier', 'immobiliare'],
+  real_estate: ['real estate', 'apartments for sale', 'homes for sale', 'property for sale', 'property listings', 'realtor', 'rent an apartment', 'mortgage calculator', 'недвижимост', 'квартир', 'новостройк', 'inmobiliaria', 'immobilien', 'immobilier', 'immobiliare'],
   legal: ['law firm', 'attorney', 'lawyer', 'legal advice', 'personal injury', 'юрист', 'адвокат', 'юридическ', 'abogado', 'rechtsanwalt', 'avocat', 'avvocato']
 };
 const VERTICAL_MIN_SCORE = 6; // weighted hits needed before we call it anything but "general"

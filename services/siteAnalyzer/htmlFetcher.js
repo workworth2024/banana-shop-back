@@ -74,7 +74,7 @@ export function normalizeUrl(raw) {
   return parsed.toString();
 }
 
-async function readCapped(response, controller, maxBytes = MAX_BYTES) {
+async function readCapped(response, controller, maxBytes = MAX_BYTES, binary = false) {
   const reader = response.body?.getReader?.();
   if (!reader) return response.text();
 
@@ -88,7 +88,8 @@ async function readCapped(response, controller, maxBytes = MAX_BYTES) {
     if (received > maxBytes) { controller.abort(); break; }
     chunks.push(value);
   }
-  return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf-8');
+  const buf = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  return binary ? buf : buf.toString('utf-8');
 }
 
 /**
@@ -96,7 +97,7 @@ async function readCapped(response, controller, maxBytes = MAX_BYTES) {
  * throw on HTTP error statuses — used for the page itself and for robots.txt, sitemap and
  * linked policy pages. Returns { status, finalUrl, headers, body, redirects }.
  */
-export async function fetchPublic(url, { timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_BYTES, userAgent } = {}) {
+export async function fetchPublic(url, { timeoutMs = FETCH_TIMEOUT_MS, maxBytes = MAX_BYTES, userAgent, binary = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = userAgent ? { ...BROWSER_HEADERS, 'User-Agent': userAgent } : BROWSER_HEADERS;
@@ -115,7 +116,7 @@ export async function fetchPublic(url, { timeoutMs = FETCH_TIMEOUT_MS, maxBytes 
       finalUrl = new URL(location, finalUrl).toString();
       if (!/^https?:/i.test(finalUrl)) throw new Error('Site redirects to a non-http(s) URL');
     }
-    const body = await readCapped(response, controller, maxBytes);
+    const body = await readCapped(response, controller, maxBytes, binary);
     return { status: response.status, finalUrl, headers: Object.fromEntries(response.headers), body, redirects };
   } finally {
     clearTimeout(timer);

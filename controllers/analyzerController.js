@@ -23,6 +23,7 @@ export const getAnalyzerLimits = async (req, res) => {
 export const runAnalyzerScan = async (req, res) => {
   const customerId = req.customer._id;
   let creditSource = null;
+  let creditDay;
 
   try {
     const { url, vertical = 'auto', geo = 'auto' } = req.body;
@@ -49,6 +50,7 @@ export const runAnalyzerScan = async (req, res) => {
       });
     }
     creditSource = consumed.source;
+    creditDay = consumed.day;
 
     const record = await SiteAnalysis.create({
       customerId,
@@ -64,6 +66,7 @@ export const runAnalyzerScan = async (req, res) => {
 
       record.status = 'completed';
       record.vertical = result.vertical;
+      record.favicon = result.favicon || null;
       record.geo = result.geo;
       record.riskScore = result.risk.score;
       record.riskLevel = result.risk.level;
@@ -87,7 +90,7 @@ export const runAnalyzerScan = async (req, res) => {
       record.status = 'failed';
       record.error = scanError.message;
       await record.save();
-      await refundAnalyzerCredit(customerId, creditSource);
+      await refundAnalyzerCredit(customerId, creditSource, creditDay);
 
       return res.status(502).json({
         message: en ? `Couldn't scan the site: ${localizeFetchError(scanError.message, lang)}` : `Не удалось просканировать сайт: ${scanError.message}`
@@ -95,7 +98,7 @@ export const runAnalyzerScan = async (req, res) => {
     }
   } catch (error) {
     console.error('[Analyzer] runAnalyzerScan error:', error);
-    if (creditSource) await refundAnalyzerCredit(customerId, creditSource);
+    if (creditSource) await refundAnalyzerCredit(customerId, creditSource, creditDay);
     return res.status(500).json({ message: 'Server error' });
   }
 };
