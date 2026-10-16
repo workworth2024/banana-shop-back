@@ -690,7 +690,7 @@ async function fulfillProductsOrCart(invoice) {
     if (preCreatedId && mongoose.isValidObjectId(preCreatedId)) {
       order = await Order.findByIdAndUpdate(
         preCreatedId,
-        { $set: { status: 'delivered', paidAt: new Date(), deliveredAt: new Date(), payLink: '' } },
+        { $set: { status: 'delivered', paidAt: new Date(), deliveredAt: new Date(), payLink: '', analyzerCreditsGranted: true } },
         { returnDocument: 'after' }
       );
     }
@@ -718,7 +718,9 @@ async function fulfillProductsOrCart(invoice) {
         paymentMethod: 'cryptocloud',
         status: 'delivered',
         paidAt: new Date(),
-        deliveredAt: new Date()
+        deliveredAt: new Date(),
+        // bonus analyzer scans are granted below — a later "delivered" status change must not grant them again
+        analyzerCreditsGranted: true
       });
     }
 
