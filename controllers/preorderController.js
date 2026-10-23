@@ -10,7 +10,7 @@ import { deleteAnyFile } from '../utils/deleteFile.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward, clawbackReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
-import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
+import { grantAnalyzerCredits, restoreAnalyzerCredits, revokeAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { isValidGeo } from '../utils/geos.js';
 import { notifyCustomer } from '../utils/notify.js';
 import { tryApplyDiscount } from '../utils/promoCode.js';
@@ -198,7 +198,7 @@ export const createPreorder = async (req, res) => {
         productType: productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
       }).catch(() => {});
 
-      grantAnalyzerCredits({ customerId, qty }).catch(() => {});
+      grantAnalyzerCredits({ customerId, qty, sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
 
       io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
         balance: customer.balance,
@@ -286,6 +286,10 @@ export const updatePreorderStatus = async (req, res) => {
     const preorder = await Preorder.findByIdAndUpdate(id, { status }, { returnDocument: 'after' })
       .populate('google_item_id', 'title');
     if (!preorder) return res.status(404).json({ message: 'Preorder not found' });
+
+    // bonus analyzer scans follow the purchase: cancelled → taken back, un-cancelled → restored
+    if (status === 'cancelled') revokeAnalyzerCredits({ sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
+    else restoreAnalyzerCredits({ sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
 
     await sendPreorderNotif(preorder);
 
@@ -459,6 +463,7 @@ export const processPreorderRefund = async (req, res) => {
 
     if (fullyRefunded) {
       clawbackReferralReward({ orderId: preorder._id, orderType: 'preorder' }).catch(() => {});
+      revokeAnalyzerCredits({ sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
     }
 
     io.of('/customer').to(`customer:${preorder.customerId}`).emit('balance_updated', { balance: customer.balance });
@@ -483,6 +488,7 @@ export const processPreorderRefund = async (req, res) => {
 export const deletePreorder = async (req, res) => {
   try {
     const preorder = await Preorder.findByIdAndDelete(req.params.id);
+    if (preorder) revokeAnalyzerCredits({ sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
     if (preorder?.files?.length) {
       for (const f of preorder.files) {
         deleteAnyFile(f.path);

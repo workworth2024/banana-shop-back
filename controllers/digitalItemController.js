@@ -386,7 +386,9 @@ export const purchaseProduct = async (req, res) => {
       paymentMethod: 'balance',
       status: 'delivered',
       paidAt: new Date(),
-      deliveredAt: new Date()
+      deliveredAt: new Date(),
+      // bonus analyzer scans are granted right below — mark it so a later "delivered" status change can't grant them again
+      analyzerCreditsGranted: true
     });
 
     await DigitalItem.updateMany({ _id: { $in: reservedIds } }, { $set: { orderId: order._id } });
@@ -422,7 +424,7 @@ export const purchaseProduct = async (req, res) => {
       productType
     }).catch(() => {});
 
-    grantAnalyzerCredits({ customerId, qty }).catch(() => {});
+    grantAnalyzerCredits({ customerId, qty, sourceType: 'order', sourceId: order._id }).catch(() => {});
 
     io.of('/customer').to(`customer:${customerId}`).emit('balance_updated', {
       balance: customer.balance,

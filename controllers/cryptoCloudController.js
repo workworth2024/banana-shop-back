@@ -26,9 +26,22 @@ const getApiUrl = () => process.env.CRYPTOCLOUD_API_URL || 'https://api.cryptocl
 const getApiKey = () => process.env.CRYPTOCLOUD_API_KEY;
 const getShopId = () => process.env.CRYPTOCLOUD_SHOP_ID;
 const getSecret = () => process.env.CRYPTOCLOUD_SECRET;
+const getProjectId = () => process.env.CRYPTOCLOUD_PROJECT_ID;
 
-const PAID_STATUSES = new Set(['paid', 'overpaid', 'partial']);
-const FAILED_STATUSES = new Set(['canceled', 'failed']);
+// The API key travels in every request — never send it over plain http in prod.
+if (process.env.NODE_ENV === 'production' && new URL(getApiUrl()).protocol !== 'https:') {
+  throw new Error('CRYPTOCLOUD_API_URL must be https in production');
+}
+
+// "partial" is NOT paid: fulfilling on it handed out goods for a fraction of the price.
+const PAID_STATUSES = new Set(['paid', 'overpaid']);
+
+const MAX_TOKEN_LENGTH = 4096;
+const MAX_TOKEN_TTL_SEC = 15 * 60;
+const MAX_API_RESPONSE_BYTES = 512 * 1024;
+const POSTBACK_LOG_SIZE = 30;
+const INVOICE_ID_RE = /^[A-Z0-9]{4,32}$/;
+const PAY_LINK_RE = /^https:\/\/([a-z0-9-]+\.)*(trybit\.com|cryptocloud\.plus)(\/|$)/i;
 
 const isDebug = () => process.env.CRYPTOCLOUD_DEBUG !== '0';
 const log = (...args) => { if (isDebug()) console.log('[CryptoCloud]', ...args); };
@@ -58,6 +71,31 @@ const releaseReservations = async (reservedIds) => {
   }
 };
 
+// No redirects (the API key must not follow a Location to another host), bounded time and size.
+async function ccApi(path, payload) {
+  const res = await fetch(`${getApiUrl()}${path}`, {
+    method: 'POST',
+    redirect: 'error',
+    signal: AbortSignal.timeout(15000),
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Token ${getApiKey()}` },
+    body: JSON.stringify(payload)
+  });
+  if (Number(res.headers.get('content-length') || 0) > MAX_API_RESPONSE_BYTES) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error('API response too large');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of res.body ?? []) {
+    size += chunk.length;
+    if (size > MAX_API_RESPONSE_BYTES) throw new Error('API response too large');
+    chunks.push(chunk);
+  }
+  let data = {};
+  try { data = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* non-JSON error page */ }
+  return { ok: res.ok, status: res.status, data };
+}
+
 async function requestCryptoCloudInvoice(invoiceDoc, customer, { ttlMinutes = 60 } = {}) {
   const body = {
     shop_id: getShopId(),
@@ -70,19 +108,11 @@ async function requestCryptoCloudInvoice(invoiceDoc, customer, { ttlMinutes = 60
     }
   };
 
-  const ccRes = await fetch(`${getApiUrl()}/v2/invoice/create`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Token ${getApiKey()}`
-    },
-    body: JSON.stringify(body)
-  });
-
-  const ccData = await ccRes.json().catch(() => ({}));
+  const ccRes = await ccApi('/v2/invoice/create', body).catch((e) => ({ ok: false, status: 0, data: { error: e.message } }));
+  const ccData = ccRes.data;
   log('CC invoice', invoiceDoc.intent, { http: ccRes.status, status: ccData?.status, link: !!ccData?.result?.link });
 
-  if (!ccRes.ok || ccData?.status !== 'success' || !ccData?.result?.link) {
+  if (!ccRes.ok || ccData?.status !== 'success' || !PAY_LINK_RE.test(String(ccData?.result?.link || ''))) {
     await CryptoCloudInvoice.updateOne({ _id: invoiceDoc._id }, { $set: { status: 'failed', rawResponse: ccData } });
     err('create invoice failed:', JSON.stringify(ccData));
     return { ok: false, data: ccData };
@@ -690,7 +720,7 @@ async function fulfillProductsOrCart(invoice) {
     if (preCreatedId && mongoose.isValidObjectId(preCreatedId)) {
       order = await Order.findByIdAndUpdate(
         preCreatedId,
-        { $set: { status: 'delivered', paidAt: new Date(), deliveredAt: new Date(), payLink: '' } },
+        { $set: { status: 'delivered', paidAt: new Date(), deliveredAt: new Date(), payLink: '', analyzerCreditsGranted: true } },
         { returnDocument: 'after' }
       );
     }
@@ -718,7 +748,9 @@ async function fulfillProductsOrCart(invoice) {
         paymentMethod: 'cryptocloud',
         status: 'delivered',
         paidAt: new Date(),
-        deliveredAt: new Date()
+        deliveredAt: new Date(),
+        // bonus analyzer scans are granted below — a later "delivered" status change must not grant them again
+        analyzerCreditsGranted: true
       });
     }
 
@@ -756,7 +788,7 @@ async function fulfillProductsOrCart(invoice) {
       productType: it.productType
     }).catch(() => {});
 
-    grantAnalyzerCredits({ customerId: invoice.customerId, qty: it.quantity }).catch(() => {});
+    grantAnalyzerCredits({ customerId: invoice.customerId, qty: it.quantity, sourceType: 'order', sourceId: order._id }).catch(() => {});
 
     await notifyCustomer({
       customerId: invoice.customerId,
@@ -824,7 +856,7 @@ async function fulfillService(invoice) {
     orderUid: order.uid
   }).catch(() => {});
 
-  grantAnalyzerCredits({ customerId: invoice.customerId, qty: 1 }).catch(() => {});
+  grantAnalyzerCredits({ customerId: invoice.customerId, qty: 1, sourceType: 'service_order', sourceId: order._id }).catch(() => {});
 
   invoice.transactionUid = tx.uid;
 
@@ -919,7 +951,7 @@ async function fulfillPreorder(invoice) {
     productType: p.productType === 'youtube' ? 'YoutubeProduct' : 'GoogleAdsProduct'
   }).catch(() => {});
 
-  grantAnalyzerCredits({ customerId: invoice.customerId, qty: p.desired_quantity }).catch(() => {});
+  grantAnalyzerCredits({ customerId: invoice.customerId, qty: p.desired_quantity, sourceType: 'preorder', sourceId: preorder._id }).catch(() => {});
 
   const customer = await CustomerUser.findById(invoice.customerId);
 
@@ -983,108 +1015,190 @@ async function rollbackInvoice(invoice) {
   }
 }
 
+/**
+ * Moves the invoice to a paid status atomically, from whatever non-paid status it has right now.
+ * CryptoCloud delivers postbacks at least once: two copies arriving together both passed the
+ * "already processed" check and fulfilled the order twice. Only the request whose conditional
+ * update actually flips the status may fulfil. If the status changed under us (a parallel copy,
+ * or the stale-invoice cron cancelling it), look again: paid → duplicate, anything else → retry.
+ */
+async function claimInvoicePaid(invoice, newStatus) {
+  let from = invoice.status;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (!from || PAID_STATUSES.has(from)) return false;
+    const r = await CryptoCloudInvoice.updateOne({ _id: invoice._id, status: from }, { $set: { status: newStatus } });
+    if (r.modifiedCount === 1) return true;
+    from = (await CryptoCloudInvoice.findById(invoice._id).select('status').lean())?.status;
+  }
+  return false;
+}
+
+const appendPostbackLog = (invoiceId, entry) => CryptoCloudInvoice.updateOne(
+  { _id: invoiceId },
+  { $push: { postbackLog: { $each: [{ at: new Date(), source: 'postback', ...entry }], $slice: -POSTBACK_LOG_SIZE } } }
+).catch((e) => err('postbackLog write failed:', e.message));
+
+/**
+ * The postback JWT is only `{ id, exp }` (HS256): it proves Trybit sent *something* about invoice `id`
+ * recently, but the body is unsigned. So it only authorises the request; what the invoice actually is
+ * comes from our own call to the Trybit API below.
+ */
+function verifyPostbackToken(token, invoiceId) {
+  if (!token || token.length > MAX_TOKEN_LENGTH) return false;
+  try {
+    const decoded = jwt.verify(token, getSecret(), { algorithms: ['HS256'] });
+    if (typeof decoded?.exp !== 'number' || decoded.exp - Math.floor(Date.now() / 1000) > MAX_TOKEN_TTL_SEC) return false;
+    return String(decoded.id ?? '').toUpperCase().replace(/^INV-/, '') === invoiceId;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchInvoiceInfo(uuid) {
+  const r = await ccApi('/v2/invoice/merchant/info', { uuids: [uuid] });
+  if (!r.ok || r.data?.status !== 'success' || !Array.isArray(r.data.result)) {
+    throw new Error(`invoice info failed (http ${r.status})`);
+  }
+  return r.data.result.find((x) => String(x?.uuid || '').toUpperCase() === uuid) || null;
+}
+
+const toCents = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? NaN : Math.round(Number(v) * 100));
+
+// Everything that must match before the invoice may be treated as ours. Empty list = consistent.
+function invoiceInfoMismatches(info, invoice) {
+  const problems = [];
+  if (String(info.project?.id ?? '') !== String(getProjectId())) problems.push('project');
+  if (String(info.order_id ?? '') !== invoice.orderId) problems.push('order_id');
+  if (typeof info.test_mode !== 'boolean') problems.push('test_mode_missing');
+  if (toCents(info.amount_usd) !== toCents(invoice.amount)) problems.push('amount');
+  if (info.amount_in_fiat != null && toCents(info.amount_in_fiat) !== toCents(invoice.amount)) problems.push('amount_in_fiat');
+  if ((invoice.currency || 'USD') !== 'USD' || (info.fiat_currency != null && String(info.fiat_currency).toUpperCase() !== 'USD')) problems.push('currency');
+  return problems;
+}
+
+function reportAnomaly(invoice, reason, details) {
+  err('SECURITY anomaly', { orderId: invoice.orderId, uuid: invoice.uuid, intent: invoice.intent, reason, ...details });
+  const payload = { orderId: invoice.orderId, uuid: invoice.uuid, intent: invoice.intent, customerId: invoice.customerId, amount: invoice.amount, reason, ...details };
+  try { io.of('/admin').to('admins').emit('topup-anomaly', payload); } catch { /* socket layer down */ }
+  createAdminNotif({
+    category: 'transaction',
+    type: 'topup_anomaly',
+    title: 'Подозрительное уведомление об оплате',
+    message: `CryptoCloud ${invoice.orderId} (${invoice.uuid}): ${reason}. Зачисление не выполнено — проверьте счёт вручную.`,
+    link: null,
+    meta: payload
+  });
+}
+
 export const handlePostback = async (req, res) => {
-  const ip = req.headers['x-forwarded-for'] || req.ip || req.connection?.remoteAddress;
-  const ct = req.headers['content-type'] || '';
+  const ip = String(req.ip || req.socket?.remoteAddress || '');
+  const unauthorized = () => res.status(401).json({ message: 'Unauthorized' });
   try {
     const body = req.body || {};
-    log('postback received', {
-      ip, contentType: ct, keys: Object.keys(body),
-      status: body.status, invoice_id: body.invoice_id, order_id: body.order_id,
-      hasToken: !!body.token
-    });
+    const invoiceId = String(body.invoice_id ?? '').trim().toUpperCase().replace(/^INV-/, '');
+    if (!INVOICE_ID_RE.test(invoiceId)) return res.status(400).json({ message: 'Invalid invoice_id' });
 
-    const status = String(body.status || '');
-    const invoiceId = String(body.invoice_id || '');
-    const orderId = body.order_id ? String(body.order_id) : '';
-    const token = body.token ? String(body.token) : '';
-
-    if (!invoiceId && !orderId) {
-      warn('postback: missing invoice_id and order_id', body);
-      return res.status(400).json({ message: 'invoice_id or order_id is required' });
+    if (!getSecret() || !getApiKey() || !getProjectId()) {
+      err('postback REJECTED: CRYPTOCLOUD_SECRET / CRYPTOCLOUD_API_KEY / CRYPTOCLOUD_PROJECT_ID not configured');
+      return res.status(500).json({ message: 'Server misconfigured' });
     }
 
-    const secret = getSecret();
-    if (!secret) {
-      err('postback REJECTED: CRYPTOCLOUD_SECRET is not configured');
-      return res.status(500).json({ message: 'Server misconfigured: secret missing' });
-    }
-    if (!token) {
-      err('postback REJECTED: missing JWT token', { ip, invoiceId, orderId });
-      return res.status(401).json({ message: 'Missing signature token' });
-    }
-    let decoded;
-    try {
-      decoded = jwt.verify(token, secret, { algorithms: ['HS256'] });
-    } catch (e) {
-      err('postback REJECTED: JWT invalid', { ip, invoiceId, orderId, reason: e.message });
-      return res.status(401).json({ message: 'Invalid signature' });
+    if (!verifyPostbackToken(typeof body.token === 'string' ? body.token.trim() : '', invoiceId)) {
+      warn('postback REJECTED: bad token', { ip, invoiceId });
+      return unauthorized();
     }
 
-    const tokenInvoiceId = decoded?.id != null ? String(decoded.id) : (decoded?.invoice_id != null ? String(decoded.invoice_id) : '');
-    if (tokenInvoiceId && invoiceId && tokenInvoiceId !== invoiceId && tokenInvoiceId !== `INV-${invoiceId}`) {
-      err('postback REJECTED: token invoice id mismatch', { tokenInvoiceId, invoiceId });
-      return res.status(401).json({ message: 'Token does not match invoice' });
-    }
-
-    const invoiceInfo = (typeof body.invoice_info === 'object' && body.invoice_info) || {};
-    const innerStatus = String(invoiceInfo.status || status || '').toLowerCase();
-    const amountPaidUsd = Number(invoiceInfo.amount_paid_usd ?? invoiceInfo.amount_in_fiat ?? 0) || 0;
-
-    const query = orderId
-      ? { orderId }
-      : { uuid: { $in: [invoiceId, `INV-${invoiceId}`] } };
-
-    const invoice = await CryptoCloudInvoice.findOne(query);
+    const uuid = `INV-${invoiceId}`;
+    const invoice = await CryptoCloudInvoice.findOne({ uuid: { $in: [uuid, invoiceId] } });
     if (!invoice) {
-      err('postback: invoice not found', { invoiceId, orderId });
+      err('postback: invoice not found', { invoiceId });
       return res.status(404).json({ message: 'Invoice not found' });
     }
 
-    if (invoice.status === 'paid' || invoice.status === 'overpaid' || invoice.status === 'partial') {
+    const { token: _omit, ...safeBody } = body;
+    const journal = (result, status) => appendPostbackLog(invoice._id, { ip, result, status: status || '' });
+
+    if (PAID_STATUSES.has(invoice.status)) {
       log('postback: already processed', { orderId: invoice.orderId });
+      await journal('already_processed', invoice.status);
       return res.status(200).json({ message: 'Already processed' });
     }
 
-    const newStatus = ['paid', 'overpaid', 'partial', 'canceled'].includes(innerStatus)
-      ? innerStatus
-      : (status === 'success' ? 'paid' : invoice.status);
+    let info;
+    try {
+      info = await fetchInvoiceInfo(uuid);
+    } catch (e) {
+      err('postback: could not verify invoice with the API', { orderId: invoice.orderId, reason: e.message });
+      await journal('api_error');
+      return res.status(502).json({ message: 'Verification unavailable, retry later' });
+    }
+    if (!info) {
+      reportAnomaly(invoice, 'invoice not returned by API', { ip });
+      await journal('anomaly_not_found');
+      return res.status(200).json({ message: 'Ignored' });
+    }
 
-    invoice.status = newStatus;
-    invoice.rawPostback = body;
-    if (amountPaidUsd > 0) invoice.amountPaidUsd = amountPaidUsd;
+    const apiStatus = String(info.status || '').toLowerCase();
+    const mismatches = invoiceInfoMismatches(info, invoice);
+    if (mismatches.length) {
+      reportAnomaly(invoice, `mismatch: ${mismatches.join(', ')}`, {
+        ip, apiStatus, apiProject: info.project?.id, apiOrderId: info.order_id, apiAmountUsd: info.amount_usd
+      });
+      await journal(`anomaly_${mismatches.join('_')}`, apiStatus);
+      return res.status(200).json({ message: 'Ignored' });
+    }
 
-    log('postback: decision', { intent: invoice.intent, newStatus, amountPaidUsd });
+    if (info.test_mode !== false) {
+      warn('postback: test-mode invoice ignored', { orderId: invoice.orderId });
+      await journal('test_mode_ignored', apiStatus);
+      return res.status(200).json({ message: 'Test payment ignored' });
+    }
 
-    if (PAID_STATUSES.has(newStatus)) {
+    if (PAID_STATUSES.has(apiStatus) && String(info.invoice_status || '').toLowerCase() === 'success') {
+      if (!(await claimInvoicePaid(invoice, apiStatus))) {
+        log('postback: duplicate — a parallel postback already took this payment', { orderId: invoice.orderId });
+        await journal('duplicate', apiStatus);
+        return res.status(200).json({ message: 'Already processed' });
+      }
+
+      invoice.status = apiStatus;
+      invoice.rawPostback = safeBody;
+      invoice.amountPaidUsd = Number(info.amount_paid_usd) || 0;
       invoice.paidAt = new Date();
+      log('postback: paid', { intent: invoice.intent, orderId: invoice.orderId, apiStatus });
+      let result = 'fulfilled';
       try {
-        if (invoice.intent === 'topup') {
-          const creditAmount = parseFloat((amountPaidUsd > 0 ? amountPaidUsd : invoice.amount).toFixed(2));
-          await fulfillTopup(invoice, creditAmount);
-        } else if (invoice.intent === 'product' || invoice.intent === 'cart') {
-          await fulfillProductsOrCart(invoice);
-        } else if (invoice.intent === 'service') {
-          await fulfillService(invoice);
-        } else if (invoice.intent === 'preorder') {
-          await fulfillPreorder(invoice);
-        }
+        // Only the amount we invoiced is credited: amount_paid_usd also includes the gateway fee paid by the client.
+        if (invoice.intent === 'topup') await fulfillTopup(invoice, parseFloat(Number(invoice.amount).toFixed(2)));
+        else if (invoice.intent === 'product' || invoice.intent === 'cart') await fulfillProductsOrCart(invoice);
+        else if (invoice.intent === 'service') await fulfillService(invoice);
+        else if (invoice.intent === 'preorder') await fulfillPreorder(invoice);
         invoice.fulfilledAt = new Date();
       } catch (e) {
+        result = 'fulfillment_error';
         err('fulfillment error:', e);
       }
       await invoice.save();
-    } else if (FAILED_STATUSES.has(newStatus)) {
-      await invoice.save();
-      await rollbackInvoice(invoice);
-    } else {
-      await invoice.save();
+      await journal(result, apiStatus);
+      return res.status(200).json({ message: 'Postback received', orderId: invoice.orderId, status: invoice.status });
     }
 
+    if (apiStatus === 'canceled' || apiStatus === 'partial') {
+      const r = await CryptoCloudInvoice.updateOne(
+        // a second "canceled" must not roll back again: the released items may already be reserved by someone else
+        { _id: invoice._id, status: { $nin: [...PAID_STATUSES, apiStatus] } },
+        { $set: { status: apiStatus, rawPostback: safeBody, amountPaidUsd: Number(info.amount_paid_usd) || 0 } }
+      );
+      if (apiStatus === 'canceled' && r.modifiedCount === 1) await rollbackInvoice(invoice);
+      await journal(apiStatus, apiStatus);
+      return res.status(200).json({ message: 'Postback received', orderId: invoice.orderId, status: apiStatus });
+    }
+
+    await journal('no_change', apiStatus);
     return res.status(200).json({ message: 'Postback received', orderId: invoice.orderId, status: invoice.status });
   } catch (e) {
     err('handlePostback error:', e);
-    return res.status(500).json({ message: 'Server error', error: e?.message });
+    return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -1092,7 +1206,7 @@ export const debugPing = async (req, res) => {
   return res.json({
     ok: true,
     time: new Date().toISOString(),
-    configured: { apiKey: !!getApiKey(), shopId: !!getShopId(), secret: !!getSecret(), apiUrl: getApiUrl() },
+    configured: { apiKey: !!getApiKey(), shopId: !!getShopId(), secret: !!getSecret(), projectId: !!getProjectId(), apiUrl: getApiUrl() },
     endpoints: {
       topup: 'POST /api/v3/cryptocloud/topup (auth)',
       checkoutProduct: 'POST /api/v3/cryptocloud/checkout/product (auth)',

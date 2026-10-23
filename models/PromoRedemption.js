@@ -35,7 +35,7 @@ const promoRedemptionSchema = new mongoose.Schema({
     default: 0
   },
   orderRef: {
-    orderType: { type: String, enum: ['order', 'preorder', 'service_order', null], default: null },
+    orderType: { type: String, enum: ['order', 'preorder', 'service_order', 'white_page', null], default: null },
     orderId: { type: mongoose.Schema.Types.ObjectId, default: null }
   },
   claimedAt: {

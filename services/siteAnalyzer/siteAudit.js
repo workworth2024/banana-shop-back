@@ -70,7 +70,8 @@ function links(html, baseUrl) {
     const href = attr(m[1], 'href');
     if (!href || /^(javascript:|#)/i.test(href)) continue;
     let abs = null;
-    try { abs = new URL(href, baseUrl).toString(); } catch { /* bad href */ }
+    // only http(s) links become clickable URLs in the report ("java\tscript:", data:, vbscript: … are dropped)
+    try { const u = new URL(href, baseUrl); abs = /^https?:$/.test(u.protocol) ? u.toString() : null; } catch { /* bad href */ }
     out.push({ href, abs, text: visibleText(m[2]).slice(0, 120) });
   }
   return out;

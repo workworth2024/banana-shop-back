@@ -2,55 +2,26 @@
  * Server-side HTML fetch — replaces the CORS-blocked client-side fetch from
  * the original policy-scanner-v3 (see its README "Known limitations #1").
  */
-import dns from 'dns';
-import net from 'net';
+import http from 'http';
+import https from 'https';
+import zlib from 'zlib';
+import { BlockedHostError, assertPublicUrl, guardedLookup } from './netGuard.js';
 
 const FETCH_TIMEOUT_MS = 20000;
 const PROXY_TIMEOUT_MS = 45000;
 const MAX_BYTES = 3 * 1024 * 1024; // 3MB cap — landing pages, not SPA bundles
 const MAX_REDIRECTS = 5;
-const ALLOWED_PORTS = new Set(['', '80', '443', '8080', '8443']);
 
 // SSRF guard: the scanner fetches user-supplied URLs from our server, so loopback,
 // private, link-local (cloud metadata) and other non-public ranges must be unreachable —
-// for the initial URL and for every redirect hop.
-const BLOCKED_RANGES = new net.BlockList();
-[
-  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
-  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
-  ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 3]
-].forEach(([addr, prefix]) => BLOCKED_RANGES.addSubnet(addr, prefix, 'ipv4'));
-[['::', 128], ['::1', 128], ['64:ff9b::', 96], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32]]
-  .forEach(([addr, prefix]) => BLOCKED_RANGES.addSubnet(addr, prefix, 'ipv6'));
-
-function isBlockedIp(ip) {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-  if (mapped) return BLOCKED_RANGES.check(mapped[1], 'ipv4');
-  return BLOCKED_RANGES.check(ip, net.isIPv6(ip) ? 'ipv6' : 'ipv4');
-}
-
-class BlockedHostError extends Error {}
-
-async function assertPublicUrl(url) {
-  const { hostname, port } = new URL(url);
-  const host = hostname.replace(/^\[|\]$/g, '');
-  if (!ALLOWED_PORTS.has(port) || /^localhost$|\.localhost$|\.local$|\.internal$/i.test(host)) {
-    throw new BlockedHostError('адрес недоступен для проверки (внутренний хост или нестандартный порт)');
-  }
-  let addresses;
-  if (net.isIP(host)) {
-    addresses = [host];
-  } else {
-    try {
-      addresses = (await dns.promises.lookup(host, { all: true })).map((a) => a.address);
-    } catch {
-      return; // unresolvable: let fetch() fail with its usual ENOTFOUND message
-    }
-  }
-  if (addresses.some(isBlockedIp)) {
-    throw new BlockedHostError('адрес недоступен для проверки (внутренний или зарезервированный IP)');
-  }
-}
+// for the initial URL and for every redirect hop. The IP is checked inside the socket's
+// lookup (netGuard.js), so DNS rebinding between "check" and "connect" is impossible.
+const BLOCKED_MESSAGES = {
+  host: 'адрес недоступен для проверки (внутренний хост или нестандартный порт)',
+  scheme: 'адрес недоступен для проверки (внутренний хост или нестандартный порт)',
+  ip: 'адрес недоступен для проверки (внутренний или зарезервированный IP)'
+};
+const blocked = (e) => new BlockedHostError(BLOCKED_MESSAGES[e.message] || BLOCKED_MESSAGES.ip);
 
 // Многие лендинги режут дата-центровые IP и «неизвестные» юзер-агенты,
 // поэтому ходим как обычный Chrome
@@ -72,6 +43,41 @@ export function normalizeUrl(raw) {
   const parsed = new URL(url); // throws on invalid input
   if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Only http(s) URLs are supported');
   return parsed.toString();
+}
+
+function requestOnce(u, { signal, headers, maxBytes, binary }) {
+  return new Promise((resolve, reject) => {
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { lookup: guardedLookup, signal, agent: false, headers: { ...headers, 'Accept-Encoding': 'gzip, deflate, br' } }, (res) => {
+      const status = res.statusCode || 0;
+      const flat = Object.fromEntries(Object.entries(res.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(', ') : v]));
+      if (status >= 300 && status < 400 && res.headers.location) {
+        res.resume();
+        return resolve({ status, headers: flat, location: res.headers.location });
+      }
+      const enc = String(res.headers['content-encoding'] || '').toLowerCase();
+      const stream = enc === 'gzip' ? res.pipe(zlib.createGunzip())
+        : enc === 'deflate' ? res.pipe(zlib.createInflate())
+          : enc === 'br' ? res.pipe(zlib.createBrotliDecompress()) : res;
+      const chunks = [];
+      let size = 0;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        const buf = Buffer.concat(chunks);
+        resolve({ status, headers: flat, body: binary ? buf : buf.toString('utf-8') });
+      };
+      stream.on('data', (c) => {
+        size += c.length;
+        if (size > maxBytes) { finish(); req.destroy(); return; }
+        chunks.push(c);
+      });
+      stream.on('end', finish);
+      stream.on('error', (e) => (size ? finish() : reject(e)));
+    });
+    req.on('error', reject);
+  });
 }
 
 async function readCapped(response, controller, maxBytes = MAX_BYTES, binary = false) {
@@ -103,21 +109,23 @@ export async function fetchPublic(url, { timeoutMs = FETCH_TIMEOUT_MS, maxBytes 
   const headers = userAgent ? { ...BROWSER_HEADERS, 'User-Agent': userAgent } : BROWSER_HEADERS;
   try {
     let finalUrl = url;
-    let response;
     const redirects = [];
     for (let hop = 0; ; hop++) {
-      await assertPublicUrl(finalUrl);
-      response = await fetch(finalUrl, { redirect: 'manual', signal: controller.signal, headers });
-      const location = response.headers.get('location');
-      if (response.status < 300 || response.status >= 400 || !location) break;
+      let u;
+      try { u = assertPublicUrl(finalUrl); } catch (e) { throw e instanceof BlockedHostError ? blocked(e) : e; }
+      let response;
+      try {
+        response = await requestOnce(u, { signal: controller.signal, headers, maxBytes, binary });
+      } catch (e) {
+        if (e instanceof BlockedHostError) throw blocked(e);
+        throw e;
+      }
+      if (!response.location) return { status: response.status, finalUrl, headers: response.headers, body: response.body, redirects };
       if (hop >= MAX_REDIRECTS) throw new Error('Site responded with HTTP 310 (too many redirects)');
-      response.body?.cancel?.().catch(() => {});
       redirects.push({ status: response.status, from: finalUrl });
-      finalUrl = new URL(location, finalUrl).toString();
+      finalUrl = new URL(response.location, finalUrl).toString();
       if (!/^https?:/i.test(finalUrl)) throw new Error('Site redirects to a non-http(s) URL');
     }
-    const body = await readCapped(response, controller, maxBytes, binary);
-    return { status: response.status, finalUrl, headers: Object.fromEntries(response.headers), body, redirects };
   } finally {
     clearTimeout(timer);
   }
@@ -180,7 +188,8 @@ export async function fetchHtml(rawUrl) {
 
   // Повтор помогает только на «мигающих» ошибках; если хост не пускает или не резолвится —
   // сразу идём в fallback, чтобы не тратить ещё один таймаут
-  const HOPELESS = ['UND_ERR_CONNECT_TIMEOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN'];
+  const HOPELESS = ['UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN'];
+  const codeOf = (e) => e?.code || e?.cause?.code || '';
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -188,8 +197,8 @@ export async function fetchHtml(rawUrl) {
     } catch (error) {
       if (error instanceof BlockedHostError) throw error;
       lastError = error;
-      console.error(`[HtmlFetcher] direct attempt ${attempt} failed:`, error.message, error.cause?.code || error.cause?.message || '');
-      if (HOPELESS.includes(error.cause?.code) || error.name === 'AbortError') break;
+      console.error(`[HtmlFetcher] direct attempt ${attempt} failed:`, error.message, codeOf(error) || error.cause?.message || '');
+      if (HOPELESS.includes(codeOf(error)) || error.name === 'AbortError') break;
       if (attempt === 1) await new Promise((r) => setTimeout(r, 800));
     }
   }
@@ -206,14 +215,14 @@ export async function fetchHtml(rawUrl) {
     throw new Error('сайт не ответил за 20 секунд — проверьте, открывается ли он');
   }
 
-  const causeCode = lastError?.cause?.code || '';
+  const causeCode = codeOf(lastError);
   if (/HTTP \d{3}/.test(lastError?.message || '')) {
     throw new Error(`сайт вернул ошибку: ${lastError.message}`);
   }
   if (causeCode === 'ENOTFOUND' || causeCode === 'EAI_AGAIN') {
     throw new Error('домен не резолвится — проверьте адрес');
   }
-  if (causeCode === 'CERT_HAS_EXPIRED' || causeCode.startsWith('ERR_TLS') || causeCode === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE') {
+  if (causeCode === 'CERT_HAS_EXPIRED' || causeCode.startsWith('ERR_TLS') || causeCode.startsWith('ERR_SSL') || /CERT|SELF_SIGNED|UNABLE_TO_VERIFY/.test(causeCode)) {
     throw new Error('проблема с SSL-сертификатом сайта');
   }
 

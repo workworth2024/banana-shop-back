@@ -74,6 +74,17 @@ const cryptoCloudInvoiceSchema = new mongoose.Schema({
   paidAt: {
     type: Date,
     default: null
+  },
+  postbackLog: {
+    type: [{
+      _id: false,
+      at: Date,
+      source: String,
+      ip: String,
+      result: String,
+      status: String
+    }],
+    default: []
   }
 }, { timestamps: true });
 

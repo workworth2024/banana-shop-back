@@ -250,7 +250,8 @@ export async function runSiteScan({ url, vertical = 'general', geo = 'US', lang 
   };
   seoResults.reverseIP = reverseIp || reverseIPLookup(ip, seoResults.whois.hosting);
 
-  const falseTexts = new Set((aiCompliance.findings || [])
+  // a page that addresses the AI reviewer doesn't get its trigger phrases waved through as "false positives"
+  const falseTexts = new Set((aiCompliance.promptInjection ? [] : aiCompliance.findings || [])
     .filter(f => f && f.isRealRisk === false && f.text)
     .map(f => String(f.text).toLowerCase()));
   const scoredText = localizeTextResults(excludeFalsePositives(textResults, falseTexts), L);

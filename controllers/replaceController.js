@@ -6,6 +6,7 @@ import Transaction from '../models/Transaction.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
 import { clawbackReferralReward } from '../utils/referral.js';
+import { revokeAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { notifyCustomer } from '../utils/notify.js';
 import path from 'path';
 import {
@@ -286,6 +287,7 @@ export const processRefund = async (req, res) => {
 
     if (fullyRefunded) {
       clawbackReferralReward({ orderId: order._id, orderType: 'order' }).catch(() => {});
+      revokeAnalyzerCredits({ sourceType: 'order', sourceId: order._id }).catch(() => {});
     }
 
     io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });

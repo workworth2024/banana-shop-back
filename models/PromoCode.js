@@ -26,7 +26,7 @@ const promoCodeSchema = new mongoose.Schema({
   // Only meaningful for type === 'discount'.
   scope: {
     type: String,
-    enum: ['any', 'google_ads', 'youtube', 'service'],
+    enum: ['any', 'google_ads', 'youtube', 'service', 'white_pages'],
     default: 'any'
   },
   discountType: {

@@ -5,6 +5,7 @@ import Transaction from '../models/Transaction.js';
 import { wpGet, wpPost, wpDownloadOrigin, WpApiError } from '../utils/wpApiClient.js';
 import { io } from '../server.js';
 import { createAdminNotif } from './adminNotifController.js';
+import { tryApplyDiscount } from '../utils/promoCode.js';
 
 // Short-lived in-process cache for GET /types — it's effectively static
 // (catalogue of site types/themes/prices) and gets hit on every price lookup
@@ -189,18 +190,28 @@ export const createWhitePage = async (req, res) => {
       return res.status(422).json({ message: 'Validation failed', code: 'VALIDATION_FAILED', errors: validationErrors });
     }
 
-    const chargeAmount = parseFloat(Number(typeDef.price) || 0);
-    if (chargeAmount <= 0) {
+    const grossAmount = parseFloat(Number(typeDef.price) || 0);
+    if (grossAmount <= 0) {
       return res.status(400).json({ message: 'Price is not configured' });
     }
+
+    const discount = await tryApplyDiscount(customer._id, 'white_pages', grossAmount).catch(() => null);
+    const chargeAmount = discount
+      ? parseFloat((grossAmount - discount.discountAmount).toFixed(2))
+      : grossAmount;
+
     if ((preCustomer.balance || 0) < chargeAmount) {
       return res.status(402).json({ message: 'Insufficient balance', code: 'INSUFFICIENT_BALANCE' });
     }
 
     try {
+      // The external generator gates /generate on this mirrored balance at the
+      // full catalogue price, so the part covered by the promo is pushed on top
+      // of the real balance. Locally we still debit only chargeAmount, and the
+      // mirror is overwritten from our balance on the next sync anyway.
       await wpPost('/balance/sync', {
         externalUserId: preCustomer.uid,
-        body: { balance: preCustomer.balance }
+        body: { balance: parseFloat(((preCustomer.balance || 0) + (discount?.discountAmount || 0)).toFixed(2)) }
       });
     } catch (err) {
       return sendWpError(res, err, 'Failed to sync balance');
@@ -261,6 +272,10 @@ export const createWhitePage = async (req, res) => {
       console.error('[WhitePages] failed to persist local order', err);
     }
 
+    if (discount) {
+      discount.consume('white_page', order?._id || null).catch(() => {});
+    }
+
     if (updatedCustomer) {
       await Transaction.create({
         userId: customer._id,
@@ -268,7 +283,7 @@ export const createWhitePage = async (req, res) => {
         status: 'success',
         amount: -chargeAmount,
         currency: 'USD',
-        note: `White page ${task.uniqueId}`
+        note: `White page ${task.uniqueId}${discount ? ` (промокод ${discount.promoCode.code}: -$${discount.discountAmount.toFixed(2)})` : ''}`
       });
 
       io.of('/customer').to(`customer:${String(customer._id)}`).emit('balance_updated', {
@@ -281,7 +296,7 @@ export const createWhitePage = async (req, res) => {
       category: 'white_page_order',
       type: 'white_page_order',
       title: 'Новый заказ White Page',
-      message: `Заказана генерация White Page — ${task.uniqueId} — $${chargeAmount.toFixed(2)}`,
+      message: `Заказана генерация White Page — ${task.uniqueId} — $${chargeAmount.toFixed(2)}${discount ? ` (промокод ${discount.promoCode.code}: -$${discount.discountAmount.toFixed(2)})` : ''}`,
       link: `/service-orders?search=${encodeURIComponent(task.uniqueId)}`,
       meta: { uniqueId: task.uniqueId, amount: chargeAmount }
     });
@@ -289,7 +304,10 @@ export const createWhitePage = async (req, res) => {
     return res.status(201).json({
       task,
       order,
-      balance: updatedCustomer ? updatedCustomer.balance : preCustomer.balance
+      balance: updatedCustomer ? updatedCustomer.balance : preCustomer.balance,
+      discount: discount
+        ? { code: discount.promoCode.code, amount: discount.discountAmount, charged: chargeAmount }
+        : null
     });
   } catch (err) {
     console.error('[WhitePages] createWhitePage error:', err);

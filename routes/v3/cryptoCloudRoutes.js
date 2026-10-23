@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import {
   createTopupInvoice,
   handlePostback,
@@ -23,8 +24,20 @@ router.post('/checkout/service', verifyCustomer, uploadServiceOrder.any(), check
 router.post('/checkout/preorder', verifyCustomer, express.json({ limit: '50kb' }), checkoutPreorder);
 router.get('/my-invoices', verifyCustomer, listMyInvoices);
 
+const postbackLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many requests' }
+});
+
 router.post(
   '/postback',
+  postbackLimiter,
+  (req, res, next) => (req.is(['application/json', 'application/x-www-form-urlencoded'])
+    ? next()
+    : res.status(415).json({ message: 'Unsupported content type' })),
   express.urlencoded({ extended: true, limit: '200kb' }),
   express.json({ limit: '200kb' }),
   (req, _res, next) => {

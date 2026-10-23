@@ -81,7 +81,7 @@ function validatePromoInput(data, { isUpdate = false } = {}) {
     if (!['balance', 'discount'].includes(data.type)) return 'Некорректный тип промокода';
   }
   if (data.type === 'discount') {
-    if (data.scope && !['any', 'google_ads', 'youtube', 'service'].includes(data.scope)) return 'Некорректная область действия';
+    if (data.scope && !['any', 'google_ads', 'youtube', 'service', 'white_pages'].includes(data.scope)) return 'Некорректная область действия';
     if (data.discountType === 'percent' && data.amount > 100) return 'Процент скидки не может быть больше 100';
   }
   if (data.amount !== undefined && (!(data.amount > 0))) return 'Сумма промокода должна быть больше 0';

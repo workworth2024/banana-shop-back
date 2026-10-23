@@ -7,8 +7,14 @@ import { checkUrl } from '../services/siteAnalyzer/urlTools.js';
 import {
   getAnalyzerLimitsView,
   consumeAnalyzerCredit,
-  refundAnalyzerCredit
+  refundAnalyzerCredit,
+  takeAnalyzerIpSlot,
+  takeFailedScanRefund
 } from '../utils/analyzerCredits.js';
+
+// a scan takes up to ~2 min; an older 'pending' row is a crashed scan and doesn't block the next one
+const ACTIVE_SCAN_WINDOW_MS = 4 * 60 * 1000;
+const ALLOWED_VERTICALS = /^[a-z_]{2,20}$/;
 import { escapeRegex } from '../utils/safeQuery.js';
 
 export const getAnalyzerLimits = async (req, res) => {
@@ -26,12 +32,22 @@ export const runAnalyzerScan = async (req, res) => {
   let creditDay;
 
   try {
-    const { url, vertical = 'auto', geo = 'auto' } = req.body;
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const { url } = body;
+    // only plain short strings reach the scanner / DB (no objects, no oversized values)
+    const vertical = typeof body.vertical === 'string' && ALLOWED_VERTICALS.test(body.vertical) ? body.vertical : 'auto';
+    const geo = typeof body.geo === 'string' && /^([A-Za-z]{2}|auto)$/.test(body.geo) ? body.geo : 'auto';
     // report language = the language selected on the site
-    const lang = normalizeLang(req.body.lang);
+    const lang = normalizeLang(body.lang);
     const en = lang === 'en';
-    if (!url || typeof url !== 'string') {
+    if (!url || typeof url !== 'string' || url.length > 2000) {
       return res.status(400).json({ message: en ? 'URL is required' : 'URL обязателен' });
+    }
+
+    // one scan at a time per account — parallel requests can't fan out paid API calls / Chrome renders
+    const running = await SiteAnalysis.exists({ customerId, status: 'pending', createdAt: { $gt: new Date(Date.now() - ACTIVE_SCAN_WINDOW_MS) } });
+    if (running) {
+      return res.status(429).json({ message: en ? 'A scan is already running — wait for it to finish.' : 'Проверка уже идёт — дождитесь её завершения.' });
     }
 
     // repair typos and make sure the domain exists BEFORE a credit is spent
@@ -41,7 +57,20 @@ export const runAnalyzerScan = async (req, res) => {
     }
     const normalizedUrl = normalizeUrl(checked.url);
 
-    const consumed = await consumeAnalyzerCredit(customerId);
+    let consumed = await consumeAnalyzerCredit(customerId);
+    // free scans are also capped per network across accounts (multi-account farming); paid bonus scans are not
+    if (consumed.ok && consumed.source === 'daily' && !(await takeAnalyzerIpSlot(req.ip, consumed.day).catch(() => false))) {
+      await refundAnalyzerCredit(customerId, 'daily', consumed.day);
+      consumed = await consumeAnalyzerCredit(customerId, { bonusOnly: true });
+      if (!consumed.ok) {
+        return res.status(429).json({
+          message: en
+            ? 'The daily limit of free scans from your network has been reached. Try again tomorrow or make a purchase to get bonus scans.'
+            : 'Дневной лимит бесплатных проверок с вашей сети исчерпан. Попробуйте завтра или совершите покупку, чтобы получить бонусные проверки.',
+          limits: getAnalyzerLimitsView(await CustomerUser.findById(customerId).select('analyzer'))
+        });
+      }
+    }
     if (!consumed.ok) {
       const limits = getAnalyzerLimitsView(req.customer);
       return res.status(429).json({
@@ -90,7 +119,8 @@ export const runAnalyzerScan = async (req, res) => {
       record.status = 'failed';
       record.error = scanError.message;
       await record.save();
-      await refundAnalyzerCredit(customerId, creditSource, creditDay);
+      // failed scans still cost us the external calls — only the first few per day are refunded
+      if (await takeFailedScanRefund(customerId)) await refundAnalyzerCredit(customerId, creditSource, creditDay);
 
       return res.status(502).json({
         message: en ? `Couldn't scan the site: ${localizeFetchError(scanError.message, lang)}` : `Не удалось просканировать сайт: ${scanError.message}`

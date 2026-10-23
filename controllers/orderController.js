@@ -7,7 +7,7 @@ import { bunnyDownload, isBunnyPath } from '../utils/bunnyStorage.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { creditReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
-import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
+import { grantAnalyzerCredits, restoreAnalyzerCredits, revokeAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { notifyCustomer } from '../utils/notify.js';
 
 export const getMyOrders = async (req, res) => {
@@ -292,8 +292,12 @@ export const updateOrderStatus = async (req, res) => {
       ).catch(() => null);
 
       if (claimed?.modifiedCount > 0) {
-        grantAnalyzerCredits({ customerId: order.customerId, qty: order.quantity || 1 }).catch(() => {});
+        grantAnalyzerCredits({ customerId: order.customerId, qty: order.quantity || 1, sourceType: 'order', sourceId: order._id }).catch(() => {});
+      } else {
+        restoreAnalyzerCredits({ sourceType: 'order', sourceId: order._id }).catch(() => {});
       }
+    } else if (status === 'cancelled') {
+      revokeAnalyzerCredits({ sourceType: 'order', sourceId: order._id }).catch(() => {});
     }
 
     try {
@@ -321,6 +325,7 @@ export const deleteOrder = async (req, res) => {
   try {
     const order = await Order.findByIdAndDelete(req.params.id);
     if (!order) return res.status(404).json({ message: 'Order not found' });
+    revokeAnalyzerCredits({ sourceType: 'order', sourceId: order._id }).catch(() => {});
     return res.status(200).json({ message: 'Order deleted' });
   } catch (error) {
     console.error('[Orders] deleteOrder error:', error);

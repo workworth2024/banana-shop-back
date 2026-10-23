@@ -67,8 +67,25 @@ export const io = new SocketIO(httpServer, {
 
 export const onlineCustomers = new Set();
 
+// Verified customer id from the httpOnly session cookie — never from client-supplied handshake data
+// (handshake.auth.customerId let anyone join another customer's room and read their balance/notifications).
+const customerIdFromSocket = async (socket) => {
+  try {
+    const token = parseCookies(socket.handshake.headers?.cookie).customer_token;
+    if (!token) return null;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.type !== 'customer') return null;
+    const { default: CustomerSession } = await import('./models/CustomerSession.js');
+    const session = await CustomerSession.findOne({ token, userId: decoded.id });
+    return session && session.expire >= new Date() ? String(decoded.id) : null;
+  } catch {
+    return null;
+  }
+};
+
+// Anonymous sockets are fine here (public product updates); only verified customers join their room.
 io.of('/customer').on('connection', async (socket) => {
-  const customerId = socket.handshake.auth?.customerId;
+  const customerId = await customerIdFromSocket(socket);
   if (customerId) {
     socket.join(`customer:${customerId}`);
     onlineCustomers.add(String(customerId));
@@ -184,6 +201,26 @@ supportNs.on('connection', async (socket) => {
   socket.on('disconnect', () => {});
 });
 
+// Staff only: the 'admins' room receives admin notifications (orders, customers, uploads).
+// Same check as the /support namespace; the CRM connects with withCredentials, so the `token` cookie is sent.
+io.of('/admin').use(async (socket, next) => {
+  try {
+    const adminToken = parseCookies(socket.handshake.headers?.cookie).token;
+    if (!adminToken) return next(new Error('unauthorized'));
+    const decoded = jwt.verify(adminToken, process.env.JWT_SECRET);
+    if (decoded.type !== 'admin') return next(new Error('unauthorized'));
+    const { default: Session } = await import('./models/Session.js');
+    const session = await Session.findOne({ token: adminToken, userId: decoded.id });
+    if (!session || session.expire < new Date()) return next(new Error('unauthorized'));
+    const { default: User } = await import('./models/User.js');
+    const user = await User.findById(decoded.id).populate('role_id');
+    if (!user || !user.status || user.role_id?.access === 'nothing' || user.role_id?.name === 'new') return next(new Error('unauthorized'));
+    return next();
+  } catch {
+    return next(new Error('unauthorized'));
+  }
+});
+
 io.of('/admin').on('connection', (socket) => {
   socket.join('admins');
   socket.on('disconnect', () => {});
@@ -192,6 +229,8 @@ io.of('/admin').on('connection', (socket) => {
 // Middleware
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors(corsOptions));
+// PPC Helper builds carry an offer description of up to 5,000 characters (≈10 KB of Cyrillic) — parsed here first
+app.use('/api/v3/ppc-helper', express.json({ limit: '64kb' }));
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
 const PRIVATE_PREFIXES = ['/digital-items/', '/preorders/', '/service-orders/', '/replace-requests/'];
@@ -489,6 +528,9 @@ app.use((err, req, res, next) => {
   res.status(err.status || 500).json({ message: 'Internal server error' });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Loopback only: nginx is the single entry point. Exposed on 0.0.0.0, anyone could hit :8000 directly
+// with a forged X-Forwarded-For (trust proxy = 1) and get a fresh IP for every rate limit / quota.
+const HOST = process.env.HOST || '127.0.0.1';
+httpServer.listen(PORT, HOST, () => {
+  console.log(`Server running on ${HOST}:${PORT}`);
 });

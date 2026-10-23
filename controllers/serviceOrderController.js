@@ -8,7 +8,7 @@ import { bunnyUpload, bunnyDownload, generateFilename, isBunnyPath } from '../ut
 import { deleteAnyFile } from '../utils/deleteFile.js';
 import { creditReferralReward, clawbackReferralReward } from '../utils/referral.js';
 import { recordPurchase } from '../utils/tracking.js';
-import { grantAnalyzerCredits } from '../utils/analyzerCredits.js';
+import { grantAnalyzerCredits, restoreAnalyzerCredits, revokeAnalyzerCredits } from '../utils/analyzerCredits.js';
 import { escapeRegex } from '../utils/safeQuery.js';
 import { notifyCustomer } from '../utils/notify.js';
 import { tryApplyDiscount } from '../utils/promoCode.js';
@@ -163,7 +163,7 @@ export const createServiceOrder = async (req, res) => {
         orderUid: order.uid
       }).catch(() => {});
 
-      grantAnalyzerCredits({ customerId, qty: 1 }).catch(() => {});
+      grantAnalyzerCredits({ customerId, qty: 1, sourceType: 'service_order', sourceId: order._id }).catch(() => {});
 
       io.of('/customer').to(`customer:${String(customerId)}`).emit('balance_updated', {
         balance: customer.balance,
@@ -326,6 +326,10 @@ export const updateServiceOrderStatus = async (req, res) => {
     );
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
+    // bonus analyzer scans follow the purchase: cancelled → taken back, un-cancelled → restored
+    if (status === 'cancelled') revokeAnalyzerCredits({ sourceType: 'service_order', sourceId: order._id }).catch(() => {});
+    else restoreAnalyzerCredits({ sourceType: 'service_order', sourceId: order._id }).catch(() => {});
+
     await sendStatusNotif(order);
     return res.json(order);
   } catch (err) {
@@ -374,6 +378,7 @@ export const processServiceOrderRefund = async (req, res) => {
 
     if (fullyRefunded) {
       clawbackReferralReward({ orderId: order._id, orderType: 'service_order' }).catch(() => {});
+      revokeAnalyzerCredits({ sourceType: 'service_order', sourceId: order._id }).catch(() => {});
     }
 
     io.of('/customer').to(`customer:${order.customerId}`).emit('balance_updated', { balance: customer.balance });
