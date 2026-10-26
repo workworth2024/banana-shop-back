@@ -11,6 +11,8 @@ import teamRoutes from './teamRoutes.js';
 import partnerRoutes from './partnerRoutes.js';
 import partnerTagRoutes from './partnerTagRoutes.js';
 import whitePageRoutes from './whitePageRoutes.js';
+import blogRoutes from './blogRoutes.js';
+import blogTagRoutes from './blogTagRoutes.js';
 
 const router = express.Router();
 
@@ -30,5 +32,7 @@ router.use('/team', teamRoutes);
 router.use('/partners', partnerRoutes);
 router.use('/partner-tags', partnerTagRoutes);
 router.use('/white-pages', whitePageRoutes);
+router.use('/blog', blogRoutes);
+router.use('/blog-tags', blogTagRoutes);
 
 export default router;

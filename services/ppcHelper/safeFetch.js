@@ -53,20 +53,25 @@ function assertUrl(url) {
   return u;
 }
 
-function getOnce(u, { signal, maxBytes }) {
+function getOnce(u, { signal, maxBytes, binary, accept }) {
   return new Promise((resolve, reject) => {
     const lib = u.protocol === 'https:' ? https : http;
     const req = lib.get(u, {
       lookup: guardedLookup,
       signal,
-      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8', 'Accept-Encoding': 'gzip, deflate, br' }
+      headers: { 'User-Agent': UA, Accept: accept || 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8', 'Accept-Encoding': 'gzip, deflate, br' }
     }, (res) => {
       const status = res.statusCode || 0;
       if (status >= 300 && status < 400 && res.headers.location) { res.resume(); return resolve({ status, headers: res.headers, redirect: res.headers.location }); }
       const enc = String(res.headers['content-encoding'] || '').toLowerCase();
       const stream = enc === 'gzip' ? res.pipe(zlib.createGunzip()) : enc === 'deflate' ? res.pipe(zlib.createInflate()) : enc === 'br' ? res.pipe(zlib.createBrotliDecompress()) : res;
       const chunks = []; let size = 0; let done = false;
-      const finish = () => { if (done) return; done = true; resolve({ status, headers: res.headers, body: Buffer.concat(chunks).toString('utf-8') }); };
+      const finish = () => {
+        if (done) return;
+        done = true;
+        const buf = Buffer.concat(chunks);
+        resolve({ status, headers: res.headers, body: binary ? undefined : buf.toString('utf-8'), buffer: binary ? buf : undefined });
+      };
       stream.on('data', (c) => { size += c.length; if (size > maxBytes) { finish(); req.destroy(); return; } chunks.push(c); });
       stream.on('end', finish);
       stream.on('error', (e) => (size ? finish() : reject(e)));
@@ -75,18 +80,27 @@ function getOnce(u, { signal, maxBytes }) {
   });
 }
 
-export async function safeFetch(url, { timeoutMs = 15000, maxBytes = 2 * 1024 * 1024 } = {}) {
+async function runSafeFetch(url, { timeoutMs = 15000, maxBytes = 2 * 1024 * 1024, binary = false, accept } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let current = String(url);
     for (let hop = 0; ; hop++) {
-      const res = await getOnce(assertUrl(current), { signal: controller.signal, maxBytes });
-      if (!res.redirect) return { status: res.status, finalUrl: current, headers: res.headers, body: res.body || '' };
+      const res = await getOnce(assertUrl(current), { signal: controller.signal, maxBytes, binary, accept });
+      if (!res.redirect) return { status: res.status, finalUrl: current, headers: res.headers, body: res.body, buffer: res.buffer };
       if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
       current = new URL(res.redirect, current).toString();
     }
   } finally {
     clearTimeout(timer);
   }
+}
+
+export async function safeFetch(url, opts = {}) {
+  return runSafeFetch(url, { ...opts, binary: false });
+}
+
+// Same SSRF guard, but keeps the raw bytes (for images etc. instead of decoding as utf-8 text).
+export async function safeFetchBuffer(url, opts = {}) {
+  return runSafeFetch(url, { ...opts, binary: true, accept: opts.accept || 'image/*,*/*;q=0.8', maxBytes: opts.maxBytes ?? 8 * 1024 * 1024 });
 }

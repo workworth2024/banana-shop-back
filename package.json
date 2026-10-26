@@ -24,6 +24,7 @@
     "@bunny.net/storage-sdk": "^0.3.1",
     "archiver": "^7.0.1",
     "bcryptjs": "^3.0.3",
+    "cheerio": "^1.2.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.3.1",

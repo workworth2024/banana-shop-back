@@ -38,6 +38,8 @@ import partnerRoutes from './partnerRoutes.js';
 import partnerTagRoutes from './partnerTagRoutes.js';
 import productSubscriptionRoutes from './productSubscriptionRoutes.js';
 import customerProductSubscriptionRoutes from './customerProductSubscriptionRoutes.js';
+import blogRoutes from './blogRoutes.js';
+import blogTagRoutes from './blogTagRoutes.js';
 
 const router = express.Router();
 
@@ -80,5 +82,7 @@ router.use('/partners', partnerRoutes);
 router.use('/partner-tags', partnerTagRoutes);
 router.use('/product-subscriptions', productSubscriptionRoutes);
 router.use('/customer/product-subscriptions', customerProductSubscriptionRoutes);
+router.use('/admin/blog/posts', blogRoutes);
+router.use('/admin/blog/tags', blogTagRoutes);
 
 export default router;
